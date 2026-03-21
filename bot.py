@@ -9,6 +9,9 @@ import chess.engine
 import berserk
 from fastapi import FastAPI
 
+# ------------------------------------------------------------------
+# Настройки
+# ------------------------------------------------------------------
 TOKEN = os.environ.get("LICHESS_TOKEN")
 STOCKFISH_PATH = "./stockfish"
 
@@ -23,19 +26,26 @@ engine = None
 running = True
 
 # Параметры вызова
-CHALLENGE_TIME = 5
-CHALLENGE_INCREMENT = 3
+CHALLENGE_TIME = 5          # минут
+CHALLENGE_INCREMENT = 3     # секунд
 CHALLENGE_RATED = True
 CHALLENGE_COLOR = "random"
-CHALLENGE_INTERVAL = 15  # секунд между вызовами
+CHALLENGE_INTERVAL = 20     # секунд между вызовами
 TARGET_RATING_MIN = 1000
 TARGET_RATING_MAX = 3000
 
+# ------------------------------------------------------------------
+# Health‑check для keep‑alive (cron-job.org)
+# ------------------------------------------------------------------
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
+# ------------------------------------------------------------------
+# Функции игры
+# ------------------------------------------------------------------
 def make_move(game_id, board):
+    """Сделать ход движком (5 секунд на ход)"""
     try:
         result = engine.play(board, chess.engine.Limit(time=5.0))
         move = result.move
@@ -49,6 +59,7 @@ def make_move(game_id, board):
         sys.stdout.flush()
 
 def play_game(game_id, initial_fen):
+    """Обрабатывает одну партию"""
     try:
         stream = client.bots.stream_game_state(game_id)
         board = chess.Board(initial_fen) if initial_fen else chess.Board()
@@ -112,48 +123,50 @@ def play_game(game_id, initial_fen):
             elif board.turn == chess.BLACK and black_id == my_id:
                 print(f"[{game_id}] Ход чёрных (бота) по gameState")
                 make_move(game_id, board)
-            else:
-                pass
 
     except Exception as e:
         print(f"[{game_id}] Ошибка в игре: {e}")
         traceback.print_exc()
         sys.stdout.flush()
 
+# ------------------------------------------------------------------
+# Отправка вызовов
+# ------------------------------------------------------------------
 def send_challenge(username):
     """Отправляет вызов конкретному пользователю"""
     try:
+        print(f"Отправка вызова {username} ({CHALLENGE_TIME}+{CHALLENGE_INCREMENT})")
         client.challenges.create(
             username=username,
-            clock_limit=CHALLENGE_TIME,
-            clock_increment=CHALLENGE_INCREMENT,
             rated=CHALLENGE_RATED,
-            color=CHALLENGE_COLOR
+            clock_limit=int(CHALLENGE_TIME),          # минуты
+            clock_increment=int(CHALLENGE_INCREMENT), # секунды
+            color=CHALLENGE_COLOR,
+            variant="standard"
         )
-        print(f"Вызов отправлен {username}")
+        print(f"✓ Вызов отправлен {username}")
         sys.stdout.flush()
     except berserk.exceptions.ApiError as e:
-        # Если игрок уже в игре или вызов невозможен, просто игнорируем
-        if "already playing" in str(e):
-            pass
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"✗ Ошибка вызова {username}: {e.response.status_code} {e.response.text}")
         else:
-            print(f"Ошибка вызова {username}: {e}")
+            print(f"✗ Ошибка вызова {username}: {e}")
     except Exception as e:
-        print(f"Ошибка вызова {username}: {e}")
+        print(f"✗ Ошибка вызова {username}: {e}")
+        traceback.print_exc()
+        sys.stdout.flush()
 
 def challenge_loop():
-    """Периодически ищет игроков и отправляет вызовы"""
+    """Периодически отправляет вызовы случайным игрокам из лидерборда"""
     while running:
         time.sleep(CHALLENGE_INTERVAL)
         try:
-            # Получаем список лидеров (например, с рейтингом 1500-2500)
-            # Это просто пример; можно искать по рейтингу через API лидерборда
-            # Для демонстрации берём первых 10 игроков из топ-100 с рейтингом в диапазоне
-            leaders = client.users.get_leaderboard(perf_type="blitz", count=50)
+            # Получаем топ‑200 блиц‑игроков
+            leaders = client.users.get_leaderboard(perf_type="blitz", count=200)
             candidates = []
             for entry in leaders:
-                rating = entry['perfs']['blitz']['rating']
-                if TARGET_RATING_MIN <= rating <= TARGET_RATING_MAX:
+                rating = entry['perfs']['blitz'].get('rating')
+                if rating and TARGET_RATING_MIN <= rating <= TARGET_RATING_MAX:
                     candidates.append(entry['username'])
             if candidates:
                 target = random.choice(candidates)
@@ -163,7 +176,11 @@ def challenge_loop():
         except Exception as e:
             print(f"Ошибка в challenge_loop: {e}")
             traceback.print_exc()
+            sys.stdout.flush()
 
+# ------------------------------------------------------------------
+# Основной поток бота
+# ------------------------------------------------------------------
 def run_bot():
     global engine
     try:
@@ -212,5 +229,6 @@ def run_bot():
         global running
         running = False
 
+# Запускаем бота в фоновом потоке (чтобы не блокировать FastAPI)
 thread = threading.Thread(target=run_bot, daemon=True)
 thread.start()
