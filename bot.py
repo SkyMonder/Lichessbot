@@ -23,11 +23,11 @@ engine = None
 running = True
 
 # Параметры вызова
-CHALLENGE_TIME_MIN = 5          # минут
-CHALLENGE_INCREMENT_SEC = 3     # секунд
+CHALLENGE_TIME_MIN = 5
+CHALLENGE_INCREMENT_SEC = 6
 CHALLENGE_RATED = True
 CHALLENGE_COLOR = "random"
-CHALLENGE_INTERVAL = 20         # секунд между вызовами
+CHALLENGE_INTERVAL = 20
 TARGET_RATING_MIN = 1000
 TARGET_RATING_MAX = 3000
 
@@ -119,7 +119,6 @@ def play_game(game_id, initial_fen):
         sys.stdout.flush()
 
 def send_challenge(username):
-    """Отправляет вызов конкретному пользователю"""
     try:
         clock_limit_sec = CHALLENGE_TIME_MIN * 60
         print(f"Отправка вызова {username} ({CHALLENGE_TIME_MIN}+{CHALLENGE_INCREMENT_SEC})")
@@ -144,7 +143,6 @@ def send_challenge(username):
         sys.stdout.flush()
 
 def challenge_loop():
-    """Периодически отправляет вызовы случайным игрокам из лидерборда"""
     while running:
         time.sleep(CHALLENGE_INTERVAL)
         print("challenge_loop: ищу кандидатов...")
@@ -189,18 +187,16 @@ def run_bot():
     print("Поток рассылки вызовов запущен")
     sys.stdout.flush()
 
-    # Получаем свой ID один раз
     my_id = client.account.get()['id']
 
     try:
-        for challenge in client.bots.stream_incoming_events():
-            print(f"Входящее событие: {challenge['type']}")
+        for event in client.bots.stream_incoming_events():
+            print(f"Входящее событие: {event['type']}")
             sys.stdout.flush()
-            if challenge['type'] == 'challenge':
+            if event['type'] == 'challenge':
                 try:
-                    ch = challenge['challenge']
+                    ch = event['challenge']
                     challenger = ch['challenger']['id']
-                    # Пропускаем собственные вызовы (которые отправили сами)
                     if challenger == my_id:
                         print(f"Пропускаем собственный вызов {ch['id']} от {challenger}")
                         continue
@@ -215,6 +211,28 @@ def run_bot():
                     ).start()
                 except Exception as e:
                     print(f"Ошибка при принятии вызова: {e}")
+                    traceback.print_exc()
+            elif event['type'] == 'gameStart':
+                # Игра началась после принятия нашего вызова
+                try:
+                    game = event['game']
+                    game_id = game['id']
+                    initial_fen = game.get('initialFen')
+                    if not initial_fen:
+                        # Если initialFen нет, пробуем получить из состояния игры
+                        try:
+                            game_info = client.games.get_game_by_id(game_id)
+                            initial_fen = game_info.get('initialFen')
+                        except:
+                            initial_fen = None
+                    print(f"Начало игры {game_id}, начальная позиция: {initial_fen}")
+                    threading.Thread(
+                        target=play_game,
+                        args=(game_id, initial_fen),
+                        daemon=True
+                    ).start()
+                except Exception as e:
+                    print(f"Ошибка при обработке gameStart: {e}")
                     traceback.print_exc()
     except Exception as e:
         print(f"Ошибка в главном цикле: {e}")
