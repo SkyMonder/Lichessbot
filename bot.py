@@ -27,9 +27,13 @@ CHALLENGE_TIME_MIN = 5
 CHALLENGE_INCREMENT_SEC = 3
 CHALLENGE_RATED = True
 CHALLENGE_COLOR = "random"
-CHALLENGE_INTERVAL = 60          # секунд между вызовами (увеличено)
+CHALLENGE_INTERVAL = 90           # 90 секунд между вызовами
 TARGET_RATING_MIN = 1000
 TARGET_RATING_MAX = 3000
+
+# Счётчик активных игр
+active_games = 0
+games_lock = threading.Lock()
 
 @app.get("/health")
 def health():
@@ -49,6 +53,10 @@ def make_move(game_id, board):
         sys.stdout.flush()
 
 def play_game(game_id, initial_fen):
+    global active_games
+    with games_lock:
+        active_games += 1
+        print(f"[{game_id}] Активных игр: {active_games}")
     try:
         stream = client.bots.stream_game_state(game_id)
         board = chess.Board(initial_fen) if initial_fen else chess.Board()
@@ -117,6 +125,10 @@ def play_game(game_id, initial_fen):
         print(f"[{game_id}] Ошибка в игре: {e}")
         traceback.print_exc()
         sys.stdout.flush()
+    finally:
+        with games_lock:
+            active_games -= 1
+            print(f"[{game_id}] Активных игр: {active_games}")
 
 def send_challenge(username):
     try:
@@ -135,8 +147,8 @@ def send_challenge(username):
     except berserk.exceptions.ApiError as e:
         if hasattr(e, 'response') and e.response is not None:
             if e.response.status_code == 429:
-                print("⚠️ Слишком много запросов (429). Увеличиваю паузу на 30 секунд.")
-                time.sleep(30)
+                print("⚠️ Слишком много запросов (429). Увеличиваю паузу на 60 секунд.")
+                time.sleep(60)
             print(f"✗ Ошибка вызова {username}: {e.response.status_code} {e.response.text}")
         else:
             print(f"✗ Ошибка вызова {username}: {e}")
@@ -147,6 +159,13 @@ def send_challenge(username):
 
 def challenge_loop():
     while running:
+        # Проверяем, есть ли активные игры
+        with games_lock:
+            if active_games > 0:
+                print(f"Пропускаем вызов, так как активных игр: {active_games}")
+                # Ждём 30 секунд и проверяем снова
+                time.sleep(30)
+                continue
         time.sleep(CHALLENGE_INTERVAL)
         print("challenge_loop: ищу кандидатов...")
         sys.stdout.flush()
