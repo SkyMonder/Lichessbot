@@ -3,12 +3,11 @@ set -e
 
 echo "Скачиваем Stockfish 17.1..."
 wget -q https://github.com/official-stockfish/Stockfish/releases/download/sf_17.1/stockfish-ubuntu-x86-64.tar
-tar -xf stockfish-ubuntu-x86-64.tar
-
-# Копируем бинарник из папки в корень и даём права
-cp stockfish/stockfish-ubuntu-x86-64 ./stockfish
-chmod +x ./stockfish
-rm -rf stockfish   # удаляем ненужную папку
+# Извлекаем только нужный файл, пропуская структуру папок
+tar -xf stockfish-ubuntu-x86-64.tar --strip-components=1 -C . stockfish/stockfish-ubuntu-x86-64
+# Переименовываем в просто stockfish
+mv stockfish-ubuntu-x86-64 stockfish
+chmod +x stockfish
 
 echo "Пытаемся превратить аккаунт в бота..."
 curl -X POST -d '' https://lichess.org/api/bot/account/upgrade \
