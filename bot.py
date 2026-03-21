@@ -9,9 +9,6 @@ import chess.engine
 import berserk
 from fastapi import FastAPI
 
-# ------------------------------------------------------------------
-# Настройки
-# ------------------------------------------------------------------
 TOKEN = os.environ.get("LICHESS_TOKEN")
 STOCKFISH_PATH = "./stockfish"
 
@@ -27,25 +24,18 @@ running = True
 
 # Параметры вызова
 CHALLENGE_TIME = 5          # минут
-CHALLENGE_INCREMENT = 3     # секунд
+CHALLENGE_INCREMENT = 3     # секунды
 CHALLENGE_RATED = True
 CHALLENGE_COLOR = "random"
 CHALLENGE_INTERVAL = 20     # секунд между вызовами
 TARGET_RATING_MIN = 1000
 TARGET_RATING_MAX = 3000
 
-# ------------------------------------------------------------------
-# Health‑check для keep‑alive (cron-job.org)
-# ------------------------------------------------------------------
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-# ------------------------------------------------------------------
-# Функции игры
-# ------------------------------------------------------------------
 def make_move(game_id, board):
-    """Сделать ход движком (5 секунд на ход)"""
     try:
         result = engine.play(board, chess.engine.Limit(time=5.0))
         move = result.move
@@ -59,7 +49,6 @@ def make_move(game_id, board):
         sys.stdout.flush()
 
 def play_game(game_id, initial_fen):
-    """Обрабатывает одну партию"""
     try:
         stream = client.bots.stream_game_state(game_id)
         board = chess.Board(initial_fen) if initial_fen else chess.Board()
@@ -129,9 +118,6 @@ def play_game(game_id, initial_fen):
         traceback.print_exc()
         sys.stdout.flush()
 
-# ------------------------------------------------------------------
-# Отправка вызовов
-# ------------------------------------------------------------------
 def send_challenge(username):
     """Отправляет вызов конкретному пользователю"""
     try:
@@ -139,8 +125,8 @@ def send_challenge(username):
         client.challenges.create(
             username=username,
             rated=CHALLENGE_RATED,
-            clock_limit=int(CHALLENGE_TIME),          # минуты
-            clock_increment=int(CHALLENGE_INCREMENT), # секунды
+            clock_limit=int(CHALLENGE_TIME),
+            clock_increment=int(CHALLENGE_INCREMENT),
             color=CHALLENGE_COLOR,
             variant="standard"
         )
@@ -160,8 +146,10 @@ def challenge_loop():
     """Периодически отправляет вызовы случайным игрокам из лидерборда"""
     while running:
         time.sleep(CHALLENGE_INTERVAL)
+        print("challenge_loop: ищу кандидатов...")
+        sys.stdout.flush()
         try:
-            # Получаем топ‑200 блиц‑игроков
+            # Получаем топ-200 блиц-игроков
             leaders = client.users.get_leaderboard(perf_type="blitz", count=200)
             candidates = []
             for entry in leaders:
@@ -170,6 +158,7 @@ def challenge_loop():
                     candidates.append(entry['username'])
             if candidates:
                 target = random.choice(candidates)
+                print(f"Выбран {target} из {len(candidates)} кандидатов")
                 send_challenge(target)
             else:
                 print("Нет подходящих игроков в лидерборде")
@@ -178,9 +167,6 @@ def challenge_loop():
             traceback.print_exc()
             sys.stdout.flush()
 
-# ------------------------------------------------------------------
-# Основной поток бота
-# ------------------------------------------------------------------
 def run_bot():
     global engine
     try:
@@ -201,6 +187,8 @@ def run_bot():
     # Запускаем поток рассылки вызовов
     challenger_thread = threading.Thread(target=challenge_loop, daemon=True)
     challenger_thread.start()
+    print("Поток рассылки вызовов запущен")
+    sys.stdout.flush()
 
     try:
         for challenge in client.bots.stream_incoming_events():
@@ -229,6 +217,5 @@ def run_bot():
         global running
         running = False
 
-# Запускаем бота в фоновом потоке (чтобы не блокировать FastAPI)
 thread = threading.Thread(target=run_bot, daemon=True)
 thread.start()
