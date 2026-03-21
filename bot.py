@@ -43,39 +43,59 @@ def play_game(game_id, initial_fen):
         print(f"[{game_id}] Игра начата. Начальная позиция: {board.fen()}")
         sys.stdout.flush()
 
-        # Получаем ID бота один раз
         my_id = client.account.get()['id']
         print(f"[{game_id}] Мой ID: {my_id}")
+        sys.stdout.flush()
+
+        white_id = None
+        black_id = None
+        started = False
 
         for event in stream:
             print(f"[{game_id}] EVENT: {event['type']}")
             sys.stdout.flush()
 
-            # Обновляем доску в зависимости от типа события
             if event['type'] == 'gameFull':
-                # В gameFull есть поле state с moves
+                white_id = event.get('white', {}).get('id')
+                black_id = event.get('black', {}).get('id')
                 moves = event.get('state', {}).get('moves', '')
                 if moves:
                     for move in moves.split():
                         board.push_uci(move)
+                started = True
+                print(f"[{game_id}] gameFull: white={white_id}, black={black_id}, my={my_id}, turn={board.turn}")
+                sys.stdout.flush()
             elif event['type'] == 'gameState':
                 moves = event.get('moves', '')
                 if moves:
-                    # Применяем новые ходы
                     current_moves = moves.split()
                     while len(current_moves) > len(board.move_stack):
                         board.push_uci(current_moves[len(board.move_stack)])
+                started = True
+                # Если white_id/black_id не определены, берём из event (если есть)
+                if white_id is None:
+                    white_id = event.get('white', {}).get('id')
+                if black_id is None:
+                    black_id = event.get('black', {}).get('id')
+            elif event['type'] == 'gameStart':
+                started = True
+                continue
+            else:
+                continue
 
-            # Проверяем статус
-            if event.get('status') != 'started':
+            if not started:
+                continue
+
+            if event.get('status') and event.get('status') != 'started':
                 print(f"[{game_id}] Игра завершена. Статус: {event.get('status')}")
                 break
 
-            # Определяем, чей ход и нужно ли ходить
-            # Сначала определяем, за кого мы играем
-            white_id = event.get('white', {}).get('id')
-            black_id = event.get('black', {}).get('id')
+            if white_id is None or black_id is None:
+                print(f"[{game_id}] ID игроков ещё не известны")
+                continue
 
+            # Определяем очередь хода
+            print(f"[{game_id}] turn={board.turn}, white={white_id}, black={black_id}, my={my_id}")
             if board.turn == chess.WHITE and white_id == my_id:
                 print(f"[{game_id}] Ход белых (бота)")
                 make_move(game_id, board)
@@ -83,8 +103,7 @@ def play_game(game_id, initial_fen):
                 print(f"[{game_id}] Ход чёрных (бота)")
                 make_move(game_id, board)
             else:
-                # Ход соперника или ещё не наша очередь
-                pass
+                print(f"[{game_id}] Ожидание хода соперника (turn={board.turn})")
 
     except Exception as e:
         print(f"[{game_id}] Ошибка в игре: {e}")
