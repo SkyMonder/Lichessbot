@@ -24,10 +24,10 @@ running = True
 
 # Параметры вызова
 CHALLENGE_TIME_MIN = 5
-CHALLENGE_INCREMENT_SEC = 6
+CHALLENGE_INCREMENT_SEC = 3
 CHALLENGE_RATED = True
 CHALLENGE_COLOR = "random"
-CHALLENGE_INTERVAL = 20
+CHALLENGE_INTERVAL = 60          # секунд между вызовами (увеличено)
 TARGET_RATING_MIN = 1000
 TARGET_RATING_MAX = 3000
 
@@ -134,6 +134,9 @@ def send_challenge(username):
         sys.stdout.flush()
     except berserk.exceptions.ApiError as e:
         if hasattr(e, 'response') and e.response is not None:
+            if e.response.status_code == 429:
+                print("⚠️ Слишком много запросов (429). Увеличиваю паузу на 30 секунд.")
+                time.sleep(30)
             print(f"✗ Ошибка вызова {username}: {e.response.status_code} {e.response.text}")
         else:
             print(f"✗ Ошибка вызова {username}: {e}")
@@ -213,13 +216,11 @@ def run_bot():
                     print(f"Ошибка при принятии вызова: {e}")
                     traceback.print_exc()
             elif event['type'] == 'gameStart':
-                # Игра началась после принятия нашего вызова
                 try:
                     game = event['game']
                     game_id = game['id']
                     initial_fen = game.get('initialFen')
                     if not initial_fen:
-                        # Если initialFen нет, пробуем получить из состояния игры
                         try:
                             game_info = client.games.get_game_by_id(game_id)
                             initial_fen = game_info.get('initialFen')
