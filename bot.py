@@ -22,12 +22,12 @@ app = FastAPI()
 engine = None
 running = True
 
-# Параметры вызова
-CHALLENGE_TIME = 5          # минут
-CHALLENGE_INCREMENT = 3     # секунды
+# Параметры вызова (в минутах и секундах)
+CHALLENGE_TIME_MIN = 5          # минут
+CHALLENGE_INCREMENT_SEC = 3     # секунд
 CHALLENGE_RATED = True
 CHALLENGE_COLOR = "random"
-CHALLENGE_INTERVAL = 20     # секунд между вызовами
+CHALLENGE_INTERVAL = 20         # секунд между вызовами
 TARGET_RATING_MIN = 1000
 TARGET_RATING_MAX = 3000
 
@@ -121,12 +121,13 @@ def play_game(game_id, initial_fen):
 def send_challenge(username):
     """Отправляет вызов конкретному пользователю"""
     try:
-        print(f"Отправка вызова {username} ({CHALLENGE_TIME}+{CHALLENGE_INCREMENT})")
+        clock_limit_sec = CHALLENGE_TIME_MIN * 60   # перевод в секунды
+        print(f"Отправка вызова {username} ({CHALLENGE_TIME_MIN}+{CHALLENGE_INCREMENT_SEC})")
         client.challenges.create(
             username=username,
             rated=CHALLENGE_RATED,
-            clock_limit=int(CHALLENGE_TIME),
-            clock_increment=int(CHALLENGE_INCREMENT),
+            clock_limit=clock_limit_sec,
+            clock_increment=CHALLENGE_INCREMENT_SEC,
             color=CHALLENGE_COLOR,
             variant="standard"
         )
@@ -149,7 +150,6 @@ def challenge_loop():
         print("challenge_loop: ищу кандидатов...")
         sys.stdout.flush()
         try:
-            # Получаем топ-200 блиц-игроков
             leaders = client.users.get_leaderboard(perf_type="blitz", count=200)
             candidates = []
             for entry in leaders:
@@ -184,7 +184,6 @@ def run_bot():
     print("Бот запущен. Ожидание вызовов...")
     sys.stdout.flush()
 
-    # Запускаем поток рассылки вызовов
     challenger_thread = threading.Thread(target=challenge_loop, daemon=True)
     challenger_thread.start()
     print("Поток рассылки вызовов запущен")
