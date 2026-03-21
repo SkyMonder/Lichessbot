@@ -27,7 +27,7 @@ CHALLENGE_TIME_MIN = 5
 CHALLENGE_INCREMENT_SEC = 3
 CHALLENGE_RATED = True
 CHALLENGE_COLOR = "random"
-CHALLENGE_INTERVAL = 180           # 3 минуты между попытками (чтобы не было 429)
+CHALLENGE_INTERVAL = 600           # 10 минут          # 3 минуты между попытками (чтобы не было 429)
 TARGET_RATING_MIN = 1000
 TARGET_RATING_MAX = 3000
 
