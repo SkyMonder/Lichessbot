@@ -1,6 +1,6 @@
 berserk
 python-chess
-requests
 fastapi
 uvicorn
 gunicorn
+requests
