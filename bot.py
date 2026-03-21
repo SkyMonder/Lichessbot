@@ -7,7 +7,7 @@ from fastapi import FastAPI
 import threading
 
 TOKEN = os.environ.get("LICHESS_TOKEN")  # токен из переменной окружения
-STOCKFISH_PATH = "stockfish.exe"  # на Render будем использовать системный stockfish
+engine = chess.engine.SimpleEngine.popen_uci("./stockfish")
 
 app = FastAPI()
 
