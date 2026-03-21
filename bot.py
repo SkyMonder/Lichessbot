@@ -1,6 +1,8 @@
 import os
 import sys
 import threading
+import time
+import random
 import traceback
 import chess
 import chess.engine
@@ -18,6 +20,16 @@ client = berserk.Client(session)
 
 app = FastAPI()
 engine = None
+running = True
+
+# Параметры вызова
+CHALLENGE_TIME = 5
+CHALLENGE_INCREMENT = 3
+CHALLENGE_RATED = True
+CHALLENGE_COLOR = "random"
+CHALLENGE_INTERVAL = 15  # секунд между вызовами
+TARGET_RATING_MIN = 1000
+TARGET_RATING_MAX = 3000
 
 @app.get("/health")
 def health():
@@ -49,7 +61,7 @@ def play_game(game_id, initial_fen):
 
         white_id = None
         black_id = None
-        started = False
+        made_first_move = False
 
         for event in stream:
             print(f"[{game_id}] EVENT: {event['type']}")
@@ -62,28 +74,29 @@ def play_game(game_id, initial_fen):
                 if moves:
                     for move in moves.split():
                         board.push_uci(move)
-                started = True
                 print(f"[{game_id}] gameFull: white={white_id}, black={black_id}, my={my_id}, turn={board.turn}")
-                sys.stdout.flush()
+                if not made_first_move:
+                    if board.turn == chess.WHITE and white_id == my_id:
+                        print(f"[{game_id}] Ход белых (бота) сразу после gameFull")
+                        make_move(game_id, board)
+                        made_first_move = True
+                    elif board.turn == chess.BLACK and black_id == my_id:
+                        print(f"[{game_id}] Ход чёрных (бота) сразу после gameFull")
+                        make_move(game_id, board)
+                        made_first_move = True
             elif event['type'] == 'gameState':
                 moves = event.get('moves', '')
                 if moves:
                     current_moves = moves.split()
                     while len(current_moves) > len(board.move_stack):
                         board.push_uci(current_moves[len(board.move_stack)])
-                started = True
-                # Если white_id/black_id не определены, берём из event (если есть)
                 if white_id is None:
                     white_id = event.get('white', {}).get('id')
                 if black_id is None:
                     black_id = event.get('black', {}).get('id')
             elif event['type'] == 'gameStart':
-                started = True
                 continue
             else:
-                continue
-
-            if not started:
                 continue
 
             if event.get('status') and event.get('status') != 'started':
@@ -91,24 +104,65 @@ def play_game(game_id, initial_fen):
                 break
 
             if white_id is None or black_id is None:
-                print(f"[{game_id}] ID игроков ещё не известны")
                 continue
 
-            # Определяем очередь хода
-            print(f"[{game_id}] turn={board.turn}, white={white_id}, black={black_id}, my={my_id}")
             if board.turn == chess.WHITE and white_id == my_id:
-                print(f"[{game_id}] Ход белых (бота)")
+                print(f"[{game_id}] Ход белых (бота) по gameState")
                 make_move(game_id, board)
             elif board.turn == chess.BLACK and black_id == my_id:
-                print(f"[{game_id}] Ход чёрных (бота)")
+                print(f"[{game_id}] Ход чёрных (бота) по gameState")
                 make_move(game_id, board)
             else:
-                print(f"[{game_id}] Ожидание хода соперника (turn={board.turn})")
+                pass
 
     except Exception as e:
         print(f"[{game_id}] Ошибка в игре: {e}")
         traceback.print_exc()
         sys.stdout.flush()
+
+def send_challenge(username):
+    """Отправляет вызов конкретному пользователю"""
+    try:
+        client.challenges.create(
+            username=username,
+            clock_limit=CHALLENGE_TIME,
+            clock_increment=CHALLENGE_INCREMENT,
+            rated=CHALLENGE_RATED,
+            color=CHALLENGE_COLOR
+        )
+        print(f"Вызов отправлен {username}")
+        sys.stdout.flush()
+    except berserk.exceptions.ApiError as e:
+        # Если игрок уже в игре или вызов невозможен, просто игнорируем
+        if "already playing" in str(e):
+            pass
+        else:
+            print(f"Ошибка вызова {username}: {e}")
+    except Exception as e:
+        print(f"Ошибка вызова {username}: {e}")
+
+def challenge_loop():
+    """Периодически ищет игроков и отправляет вызовы"""
+    while running:
+        time.sleep(CHALLENGE_INTERVAL)
+        try:
+            # Получаем список лидеров (например, с рейтингом 1500-2500)
+            # Это просто пример; можно искать по рейтингу через API лидерборда
+            # Для демонстрации берём первых 10 игроков из топ-100 с рейтингом в диапазоне
+            leaders = client.users.get_leaderboard(perf_type="blitz", count=50)
+            candidates = []
+            for entry in leaders:
+                rating = entry['perfs']['blitz']['rating']
+                if TARGET_RATING_MIN <= rating <= TARGET_RATING_MAX:
+                    candidates.append(entry['username'])
+            if candidates:
+                target = random.choice(candidates)
+                send_challenge(target)
+            else:
+                print("Нет подходящих игроков в лидерборде")
+        except Exception as e:
+            print(f"Ошибка в challenge_loop: {e}")
+            traceback.print_exc()
 
 def run_bot():
     global engine
@@ -126,6 +180,10 @@ def run_bot():
 
     print("Бот запущен. Ожидание вызовов...")
     sys.stdout.flush()
+
+    # Запускаем поток рассылки вызовов
+    challenger_thread = threading.Thread(target=challenge_loop, daemon=True)
+    challenger_thread.start()
 
     try:
         for challenge in client.bots.stream_incoming_events():
@@ -150,6 +208,9 @@ def run_bot():
     except Exception as e:
         print(f"Ошибка в главном цикле: {e}")
         traceback.print_exc()
+    finally:
+        global running
+        running = False
 
 thread = threading.Thread(target=run_bot, daemon=True)
 thread.start()
