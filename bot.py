@@ -25,7 +25,6 @@ def health():
 
 def make_move(game_id, board):
     try:
-        # Увеличил время на ход до 5 секунд для более сильной игры
         result = engine.play(board, chess.engine.Limit(time=5.0))
         move = result.move
         if move:
@@ -38,8 +37,10 @@ def make_move(game_id, board):
 def play_game(game_id, initial_fen):
     try:
         stream = client.bots.stream_game_state(game_id)
-        # Если начальная позиция не передана, используем стандартную
-        board = chess.Board(initial_fen if initial_fen else "startpos")
+        # Если initial_fen нет, используем стандартную начальную позицию
+        if not initial_fen:
+            initial_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        board = chess.Board(initial_fen)
         print(f"[{game_id}] Игра начата. Начальная позиция: {board.fen()}")
 
         for event in stream:
@@ -78,8 +79,7 @@ def run_bot():
         print("Загружаем Stockfish...")
         sys.stdout.flush()
         engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
-        # Установка максимальной силы
-        engine.configure({"Skill Level": 20})  # 20 - максимальный уровень
+        engine.configure({"Skill Level": 20})
         print("Stockfish загружен и настроен на максимальную силу.")
         sys.stdout.flush()
     except Exception as e:
@@ -96,7 +96,6 @@ def run_bot():
                 try:
                     challenger = challenge['challenge']['challenger']['id']
                     print(f"Получен вызов от {challenger}")
-                    # Получаем initialFen, если его нет, используем None
                     initial_fen = challenge['challenge'].get('initialFen')
                     client.bots.accept_challenge(challenge['challenge']['id'])
                     print(f"Вызов от {challenger} принят")
@@ -112,6 +111,5 @@ def run_bot():
         print(f"Ошибка в главном цикле: {e}")
         traceback.print_exc()
 
-# Запускаем бота в фоновом потоке
 thread = threading.Thread(target=run_bot, daemon=True)
 thread.start()
