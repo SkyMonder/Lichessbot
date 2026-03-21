@@ -37,10 +37,11 @@ def make_move(game_id, board):
 def play_game(game_id, initial_fen):
     try:
         stream = client.bots.stream_game_state(game_id)
-        # Если initial_fen нет, используем стандартную начальную позицию
-        if not initial_fen:
-            initial_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-        board = chess.Board(initial_fen)
+        # Создаём доску: если передан корректный FEN – используем его, иначе начальную позицию
+        if initial_fen:
+            board = chess.Board(initial_fen)
+        else:
+            board = chess.Board()
         print(f"[{game_id}] Игра начата. Начальная позиция: {board.fen()}")
 
         for event in stream:
@@ -111,5 +112,6 @@ def run_bot():
         print(f"Ошибка в главном цикле: {e}")
         traceback.print_exc()
 
+# Запускаем бота в фоновом потоке
 thread = threading.Thread(target=run_bot, daemon=True)
 thread.start()
