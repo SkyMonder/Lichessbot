@@ -22,7 +22,7 @@ app = FastAPI()
 engine = None
 running = True
 
-# Параметры вызова (в минутах и секундах)
+# Параметры вызова
 CHALLENGE_TIME_MIN = 5          # минут
 CHALLENGE_INCREMENT_SEC = 3     # секунд
 CHALLENGE_RATED = True
@@ -121,7 +121,7 @@ def play_game(game_id, initial_fen):
 def send_challenge(username):
     """Отправляет вызов конкретному пользователю"""
     try:
-        clock_limit_sec = CHALLENGE_TIME_MIN * 60   # перевод в секунды
+        clock_limit_sec = CHALLENGE_TIME_MIN * 60
         print(f"Отправка вызова {username} ({CHALLENGE_TIME_MIN}+{CHALLENGE_INCREMENT_SEC})")
         client.challenges.create(
             username=username,
@@ -189,6 +189,9 @@ def run_bot():
     print("Поток рассылки вызовов запущен")
     sys.stdout.flush()
 
+    # Получаем свой ID один раз
+    my_id = client.account.get()['id']
+
     try:
         for challenge in client.bots.stream_incoming_events():
             print(f"Входящее событие: {challenge['type']}")
@@ -197,6 +200,10 @@ def run_bot():
                 try:
                     ch = challenge['challenge']
                     challenger = ch['challenger']['id']
+                    # Пропускаем собственные вызовы (которые отправили сами)
+                    if challenger == my_id:
+                        print(f"Пропускаем собственный вызов {ch['id']} от {challenger}")
+                        continue
                     print(f"Получен вызов от {challenger}")
                     initial_fen = ch.get('initialFen')
                     client.bots.accept_challenge(ch['id'])
