@@ -27,11 +27,10 @@ CHALLENGE_TIME_MIN = 5
 CHALLENGE_INCREMENT_SEC = 3
 CHALLENGE_RATED = True
 CHALLENGE_COLOR = "random"
-CHALLENGE_INTERVAL = 90           # 90 секунд между вызовами
+CHALLENGE_INTERVAL = 180           # 3 минуты между попытками (чтобы не было 429)
 TARGET_RATING_MIN = 1000
 TARGET_RATING_MAX = 3000
 
-# Счётчик активных игр
 active_games = 0
 games_lock = threading.Lock()
 
@@ -147,9 +146,10 @@ def send_challenge(username):
     except berserk.exceptions.ApiError as e:
         if hasattr(e, 'response') and e.response is not None:
             if e.response.status_code == 429:
-                print("⚠️ Слишком много запросов (429). Увеличиваю паузу на 60 секунд.")
-                time.sleep(60)
-            print(f"✗ Ошибка вызова {username}: {e.response.status_code} {e.response.text}")
+                print("⚠️ Слишком много запросов (429). Делаем паузу 120 секунд.")
+                time.sleep(120)
+            else:
+                print(f"✗ Ошибка вызова {username}: {e.response.status_code} {e.response.text}")
         else:
             print(f"✗ Ошибка вызова {username}: {e}")
     except Exception as e:
@@ -159,12 +159,11 @@ def send_challenge(username):
 
 def challenge_loop():
     while running:
-        # Проверяем, есть ли активные игры
+        # Проверяем, не идёт ли игра
         with games_lock:
             if active_games > 0:
-                print(f"Пропускаем вызов, так как активных игр: {active_games}")
-                # Ждём 30 секунд и проверяем снова
-                time.sleep(30)
+                print(f"Идёт игра ({active_games}), пропускаем отправку вызова.")
+                time.sleep(60)
                 continue
         time.sleep(CHALLENGE_INTERVAL)
         print("challenge_loop: ищу кандидатов...")
