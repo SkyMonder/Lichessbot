@@ -6,31 +6,22 @@ import berserk
 from fastapi import FastAPI
 
 TOKEN = os.environ.get("LICHESS_TOKEN")
-STOCKFISH_PATH = "./stockfish"   # бинарник, который будет скачан в start.sh
+STOCKFISH_PATH = "./stockfish"
 
 if not TOKEN:
     raise RuntimeError("LICHESS_TOKEN environment variable not set")
 
-# Инициализация клиента Lichess
 session = berserk.TokenSession(TOKEN)
 client = berserk.Client(session)
 
 app = FastAPI()
-
 engine = None
 
-# ------------------------------------------------------------------
-#  Health‑check для cron-job.org (держит бота на Render живым)
-# ------------------------------------------------------------------
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-# ------------------------------------------------------------------
-#  Логика игры
-# ------------------------------------------------------------------
 def make_move(game_id, board):
-    """Сделать ход движком Stockfish (3 секунды на ход)."""
     try:
         result = engine.play(board, chess.engine.Limit(time=3.0))
         move = result.move
@@ -41,12 +32,10 @@ def make_move(game_id, board):
         print(f"Ошибка при ходе: {e}")
 
 def play_game(game_id, initial_fen):
-    """Играет одну партию, подписываясь на события."""
     stream = client.bots.stream_game_state(game_id)
     board = chess.Board(initial_fen)
 
     for event in stream:
-        # Обновляем доску новыми ходами
         if event['type'] == 'gameFull':
             for move in event.get('state', {}).get('moves', '').split():
                 board.push_uci(move)
@@ -55,7 +44,6 @@ def play_game(game_id, initial_fen):
             while len(moves) > len(board.move_stack):
                 board.push_uci(moves[len(board.move_stack)])
 
-        # Определяем, чей ход и наш ли он
         if event.get('status') != 'started':
             break
 
@@ -73,7 +61,6 @@ def play_game(game_id, initial_fen):
             make_move(game_id, board)
 
 def run_bot():
-    """Главный цикл: ждёт вызовы и запускает игры."""
     global engine
     try:
         engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
@@ -87,7 +74,6 @@ def run_bot():
             try:
                 client.bots.accept_challenge(challenge['challenge']['id'])
                 print(f"Принят вызов от {challenge['challenge']['challenger']['id']}")
-                # Запускаем игру в отдельном потоке, чтобы не блокировать приём новых вызовов
                 threading.Thread(
                     target=play_game,
                     args=(challenge['challenge']['id'], challenge['challenge']['initialFen']),
@@ -96,7 +82,4 @@ def run_bot():
             except Exception as e:
                 print(f"Ошибка при принятии вызова: {e}")
 
-# ------------------------------------------------------------------
-#  Запускаем бота в фоновом потоке при старте приложения
-# ------------------------------------------------------------------
 threading.Thread(target=run_bot, daemon=True).start()
