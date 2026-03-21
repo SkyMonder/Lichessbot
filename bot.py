@@ -25,7 +25,8 @@ def health():
 
 def make_move(game_id, board):
     try:
-        result = engine.play(board, chess.engine.Limit(time=3.0))
+        # Увеличил время на ход до 5 секунд для более сильной игры
+        result = engine.play(board, chess.engine.Limit(time=5.0))
         move = result.move
         if move:
             client.bots.make_move(game_id, move.uci())
@@ -37,8 +38,9 @@ def make_move(game_id, board):
 def play_game(game_id, initial_fen):
     try:
         stream = client.bots.stream_game_state(game_id)
-        board = chess.Board(initial_fen)
-        print(f"[{game_id}] Игра начата. Начальная позиция: {initial_fen}")
+        # Если начальная позиция не передана, используем стандартную
+        board = chess.Board(initial_fen if initial_fen else "startpos")
+        print(f"[{game_id}] Игра начата. Начальная позиция: {board.fen()}")
 
         for event in stream:
             if event['type'] == 'gameFull':
@@ -76,7 +78,9 @@ def run_bot():
         print("Загружаем Stockfish...")
         sys.stdout.flush()
         engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
-        print("Stockfish загружен.")
+        # Установка максимальной силы
+        engine.configure({"Skill Level": 20})  # 20 - максимальный уровень
+        print("Stockfish загружен и настроен на максимальную силу.")
         sys.stdout.flush()
     except Exception as e:
         print(f"Не удалось запустить Stockfish: {e}")
@@ -92,11 +96,13 @@ def run_bot():
                 try:
                     challenger = challenge['challenge']['challenger']['id']
                     print(f"Получен вызов от {challenger}")
+                    # Получаем initialFen, если его нет, используем None
+                    initial_fen = challenge['challenge'].get('initialFen')
                     client.bots.accept_challenge(challenge['challenge']['id'])
                     print(f"Вызов от {challenger} принят")
                     threading.Thread(
                         target=play_game,
-                        args=(challenge['challenge']['id'], challenge['challenge']['initialFen']),
+                        args=(challenge['challenge']['id'], initial_fen),
                         daemon=True
                     ).start()
                 except Exception as e:
