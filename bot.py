@@ -29,22 +29,27 @@ def make_move(game_id, board):
         move = result.move
         if move:
             client.bots.make_move(game_id, move.uci())
-            print(f"[{game_id}] Сделан ход {move.uci()}")
+            print(f"[{game_id}] >>> Ход {move.uci()}")
+            sys.stdout.flush()
     except Exception as e:
         print(f"[{game_id}] Ошибка хода: {e}")
         traceback.print_exc()
+        sys.stdout.flush()
 
 def play_game(game_id, initial_fen):
     try:
         stream = client.bots.stream_game_state(game_id)
-        # Создаём доску: если передан корректный FEN – используем его, иначе начальную позицию
-        if initial_fen:
-            board = chess.Board(initial_fen)
-        else:
-            board = chess.Board()
+        board = chess.Board(initial_fen) if initial_fen else chess.Board()
         print(f"[{game_id}] Игра начата. Начальная позиция: {board.fen()}")
+        sys.stdout.flush()
+
+        my_id = client.account.get()['id']
+        print(f"[{game_id}] Мой ID: {my_id}")
 
         for event in stream:
+            print(f"[{game_id}] EVENT: {event['type']} status={event.get('status')}")
+            sys.stdout.flush()
+
             if event['type'] == 'gameFull':
                 for move in event.get('state', {}).get('moves', '').split():
                     board.push_uci(move)
@@ -57,22 +62,21 @@ def play_game(game_id, initial_fen):
                 print(f"[{game_id}] Игра завершена. Статус: {event.get('status')}")
                 break
 
-            try:
-                my_id = client.account.get()['id']
-            except Exception:
-                my_id = None
-
-            if my_id is None:
-                continue
-
+            # Определяем, чей ход
             if board.turn == chess.WHITE and event.get('white', {}).get('id') == my_id:
+                print(f"[{game_id}] Ход белых (бота)")
                 make_move(game_id, board)
             elif board.turn == chess.BLACK and event.get('black', {}).get('id') == my_id:
+                print(f"[{game_id}] Ход чёрных (бота)")
                 make_move(game_id, board)
+            else:
+                # Если ход соперника – просто ждём
+                pass
 
     except Exception as e:
         print(f"[{game_id}] Ошибка в игре: {e}")
         traceback.print_exc()
+        sys.stdout.flush()
 
 def run_bot():
     global engine
@@ -93,16 +97,19 @@ def run_bot():
 
     try:
         for challenge in client.bots.stream_incoming_events():
+            print(f"Входящее событие: {challenge['type']}")
+            sys.stdout.flush()
             if challenge['type'] == 'challenge':
                 try:
-                    challenger = challenge['challenge']['challenger']['id']
+                    ch = challenge['challenge']
+                    challenger = ch['challenger']['id']
                     print(f"Получен вызов от {challenger}")
-                    initial_fen = challenge['challenge'].get('initialFen')
-                    client.bots.accept_challenge(challenge['challenge']['id'])
+                    initial_fen = ch.get('initialFen')
+                    client.bots.accept_challenge(ch['id'])
                     print(f"Вызов от {challenger} принят")
                     threading.Thread(
                         target=play_game,
-                        args=(challenge['challenge']['id'], initial_fen),
+                        args=(ch['id'], initial_fen),
                         daemon=True
                     ).start()
                 except Exception as e:
@@ -112,6 +119,5 @@ def run_bot():
         print(f"Ошибка в главном цикле: {e}")
         traceback.print_exc()
 
-# Запускаем бота в фоновом потоке
 thread = threading.Thread(target=run_bot, daemon=True)
 thread.start()
