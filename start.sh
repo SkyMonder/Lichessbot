@@ -3,9 +3,7 @@ set -e
 
 echo "Скачиваем Stockfish 17.1..."
 wget -q https://github.com/official-stockfish/Stockfish/releases/download/sf_17.1/stockfish-ubuntu-x86-64.tar
-# Извлекаем только нужный файл, пропуская структуру папок
 tar -xf stockfish-ubuntu-x86-64.tar --strip-components=1 -C . stockfish/stockfish-ubuntu-x86-64
-# Переименовываем в просто stockfish
 mv stockfish-ubuntu-x86-64 stockfish
 chmod +x stockfish
 
