@@ -20,6 +20,7 @@ client = berserk.Client(session)
 
 app = FastAPI()
 engine = None
+engine_lock = threading.Lock()          # блокировка для безопасного использования движка
 running = True
 
 # Параметры вызова
@@ -27,7 +28,7 @@ CHALLENGE_TIME_MIN = 5
 CHALLENGE_INCREMENT_SEC = 3
 CHALLENGE_RATED = True
 CHALLENGE_COLOR = "random"
-CHALLENGE_INTERVAL = 600           # 10 минут          # 3 минуты между попытками (чтобы не было 429)
+CHALLENGE_INTERVAL = 300                # 5 минут между попытками
 TARGET_RATING_MIN = 1000
 TARGET_RATING_MAX = 3000
 
@@ -39,9 +40,11 @@ def health():
     return {"status": "ok"}
 
 def make_move(game_id, board):
+    """Делает ход движком с блокировкой"""
     try:
-        result = engine.play(board, chess.engine.Limit(time=5.0))
-        move = result.move
+        with engine_lock:
+            result = engine.play(board, chess.engine.Limit(time=5.0))
+            move = result.move
         if move:
             client.bots.make_move(game_id, move.uci())
             print(f"[{game_id}] >>> Ход {move.uci()}")
@@ -52,6 +55,7 @@ def make_move(game_id, board):
         sys.stdout.flush()
 
 def play_game(game_id, initial_fen):
+    """Обрабатывает одну партию"""
     global active_games
     with games_lock:
         active_games += 1
@@ -101,8 +105,6 @@ def play_game(game_id, initial_fen):
                     white_id = event.get('white', {}).get('id')
                 if black_id is None:
                     black_id = event.get('black', {}).get('id')
-            elif event['type'] == 'gameStart':
-                continue
             else:
                 continue
 
@@ -130,6 +132,7 @@ def play_game(game_id, initial_fen):
             print(f"[{game_id}] Активных игр: {active_games}")
 
 def send_challenge(username):
+    """Отправляет вызов"""
     try:
         clock_limit_sec = CHALLENGE_TIME_MIN * 60
         print(f"Отправка вызова {username} ({CHALLENGE_TIME_MIN}+{CHALLENGE_INCREMENT_SEC})")
@@ -143,11 +146,12 @@ def send_challenge(username):
         )
         print(f"✓ Вызов отправлен {username}")
         sys.stdout.flush()
+        time.sleep(30)   # небольшая пауза после успешной отправки
     except berserk.exceptions.ApiError as e:
         if hasattr(e, 'response') and e.response is not None:
             if e.response.status_code == 429:
-                print("⚠️ Слишком много запросов (429). Делаем паузу 120 секунд.")
-                time.sleep(120)
+                print("⚠️ Слишком много запросов (429). Делаю паузу 180 секунд.")
+                time.sleep(180)
             else:
                 print(f"✗ Ошибка вызова {username}: {e.response.status_code} {e.response.text}")
         else:
@@ -158,8 +162,8 @@ def send_challenge(username):
         sys.stdout.flush()
 
 def challenge_loop():
+    """Периодически отправляет вызовы, если нет активных игр"""
     while running:
-        # Проверяем, не идёт ли игра
         with games_lock:
             if active_games > 0:
                 print(f"Идёт игра ({active_games}), пропускаем отправку вызова.")
@@ -203,6 +207,7 @@ def run_bot():
     print("Бот запущен. Ожидание вызовов...")
     sys.stdout.flush()
 
+    # Запускаем поток рассылки вызовов
     challenger_thread = threading.Thread(target=challenge_loop, daemon=True)
     challenger_thread.start()
     print("Поток рассылки вызовов запущен")
@@ -219,7 +224,7 @@ def run_bot():
                     ch = event['challenge']
                     challenger = ch['challenger']['id']
                     if challenger == my_id:
-                        print(f"Пропускаем собственный вызов {ch['id']} от {challenger}")
+                        print(f"Пропускаем собственный вызов {ch['id']}")
                         continue
                     print(f"Получен вызов от {challenger}")
                     initial_fen = ch.get('initialFen')
@@ -233,26 +238,7 @@ def run_bot():
                 except Exception as e:
                     print(f"Ошибка при принятии вызова: {e}")
                     traceback.print_exc()
-            elif event['type'] == 'gameStart':
-                try:
-                    game = event['game']
-                    game_id = game['id']
-                    initial_fen = game.get('initialFen')
-                    if not initial_fen:
-                        try:
-                            game_info = client.games.get_game_by_id(game_id)
-                            initial_fen = game_info.get('initialFen')
-                        except:
-                            initial_fen = None
-                    print(f"Начало игры {game_id}, начальная позиция: {initial_fen}")
-                    threading.Thread(
-                        target=play_game,
-                        args=(game_id, initial_fen),
-                        daemon=True
-                    ).start()
-                except Exception as e:
-                    print(f"Ошибка при обработке gameStart: {e}")
-                    traceback.print_exc()
+            # Обработка gameStart удалена, чтобы не создавать лишний поток
     except Exception as e:
         print(f"Ошибка в главном цикле: {e}")
         traceback.print_exc()
