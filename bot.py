@@ -7,6 +7,7 @@ import traceback
 import chess
 import chess.engine
 import berserk
+import requests
 from fastapi import FastAPI
 
 TOKEN = os.environ.get("LICHESS_TOKEN")
@@ -73,7 +74,6 @@ def play_game(game_id, initial_fen):
         active_games += 1
         print(f"[{game_id}] Активных игр: {active_games}")
     try:
-        # Запоминаем начальную позицию
         board = chess.Board(initial_fen) if initial_fen else chess.Board()
         print(f"[{game_id}] Игра начата. Начальная позиция: {board.fen()}")
         sys.stdout.flush()
@@ -86,7 +86,6 @@ def play_game(game_id, initial_fen):
         black_id = None
         made_first_move = False
 
-        # Основной цикл с возможностью переподключения потока
         while True:
             try:
                 stream = client.bots.stream_game_state(game_id)
@@ -101,16 +100,7 @@ def play_game(game_id, initial_fen):
                         if moves:
                             for move in moves.split():
                                 board.push_uci(move)
-                        print(f"[{game_id}] gameFull: white={white_id}, black={black_id}, my={my_id}, turn={board.turn}")
-                        if not made_first_move:
-                            if board.turn == chess.WHITE and white_id == my_id:
-                                print(f"[{game_id}] Ход белых (бота) сразу после gameFull")
-                                make_move_with_retry(game_id, board)
-                                made_first_move = True
-                            elif board.turn == chess.BLACK and black_id == my_id:
-                                print(f"[{game_id}] Ход чёрных (бота) сразу после gameFull")
-                                make_move_with_retry(game_id, board)
-                                made_first_move = True
+                        print(f"[{game_id}] gameFull: white={white_id}, black={black_id}, my={my_id}, turn={board.turn}, move_stack_len={len(board.move_stack)}")
                     elif event['type'] == 'gameState':
                         moves = event.get('moves', '')
                         if moves:
@@ -126,27 +116,30 @@ def play_game(game_id, initial_fen):
 
                     if event.get('status') and event.get('status') != 'started':
                         print(f"[{game_id}] Игра завершена. Статус: {event.get('status')}")
-                        return  # выходим из функции, игра окончена
+                        return
 
                     if white_id is None or black_id is None:
                         continue
 
                     if board.turn == chess.WHITE and white_id == my_id:
-                        print(f"[{game_id}] Ход белых (бота) по gameState")
+                        print(f"[{game_id}] Ход белых (бота) по {event['type']}")
+                        if not made_first_move:
+                            made_first_move = True
                         make_move_with_retry(game_id, board)
                     elif board.turn == chess.BLACK and black_id == my_id:
-                        print(f"[{game_id}] Ход чёрных (бота) по gameState")
+                        print(f"[{game_id}] Ход чёрных (бота) по {event['type']}")
+                        if not made_first_move:
+                            made_first_move = True
                         make_move_with_retry(game_id, board)
 
             except (berserk.exceptions.ApiError, requests.exceptions.ConnectionError) as e:
                 print(f"[{game_id}] Ошибка соединения в потоке игры: {e}. Переподключаемся через 5 секунд...")
                 time.sleep(5)
-                continue  # перезапускаем цикл с новым stream
+                continue
             except Exception as e:
                 print(f"[{game_id}] Неожиданная ошибка в игре: {e}")
                 traceback.print_exc()
                 break
-
     except Exception as e:
         print(f"[{game_id}] Ошибка в игре (внешний уровень): {e}")
         traceback.print_exc()
