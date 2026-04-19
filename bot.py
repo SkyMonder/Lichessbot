@@ -6,19 +6,16 @@ import random
 import traceback
 import chess
 import chess.engine
-import chess.polyglot
 import berserk
 import requests
-from pathlib import Path
-from collections import defaultdict
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 
 # ------------------------------------------------------------------
-# Настройки окружения
+# Настройки
 # ------------------------------------------------------------------
 TOKEN = os.environ.get("LICHESS_TOKEN")
 STOCKFISH_PATH = "./stockfish"
-BERZERK_PATH = "./berserk_engine"
+BERSERK_PATH = "./berserk_engine"
 CLOVER_PATH = "./clover_engine"
 
 if not TOKEN:
@@ -29,161 +26,118 @@ client = berserk.Client(session)
 
 app = FastAPI()
 running = True
+
+# Движки
+engines = {}
+engine_lock = threading.Lock()
+
+# Счётчик активных игр
 active_games = 0
 games_lock = threading.Lock()
 
-# Параметры для дебютной книги и эндшпильных таблиц
-OPENING_BOOK_PATH = "books/Perfect2023.bin"   # помести файл книги в папку books/
-TABLEBASE_PATH = "tb"                         # папка с таблицами (3-4-5)
-
-# Параметры движков (максимальная производительность)
-STOCKFISH_HASH_MB = 256
-STOCKFISH_THREADS = 2
-OTHER_ENGINE_HASH_MB = 128
-OTHER_ENGINE_THREADS = 1
-
-# Параметры вызова (ручной / автоматический)
-CHALLENGE_TIME_MIN = 5
-CHALLENGE_INCREMENT_SEC = 3
-CHALLENGE_RATED = True
-CHALLENGE_COLOR = "random"
-# Активная рассылка отключена – только ручные вызовы через /challenge
-# Если хотите включить, раскомментируйте в run_bot() и установите интервал
-# CHALLENGE_INTERVAL = 600
-
-engines = {}          # словарь с движками
-engine_lock = threading.Lock()
-
 # ------------------------------------------------------------------
-# FastAPI endpoints
+# Health‑check (для keep‑alive на Render)
 # ------------------------------------------------------------------
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-@app.get("/challenge/{username}")
-def manual_challenge(username: str):
-    """Отправить вызов указанному игроку (ручной режим)."""
-    try:
-        clock_limit_sec = CHALLENGE_TIME_MIN * 60
-        client.challenges.create(
-            username=username,
-            rated=CHALLENGE_RATED,
-            clock_limit=clock_limit_sec,
-            clock_increment=CHALLENGE_INCREMENT_SEC,
-            color=CHALLENGE_COLOR,
-            variant="standard"
-        )
-        return {"status": "ok", "message": f"Challenge sent to {username}"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 # ------------------------------------------------------------------
-# Адаптивное время на ход
+# Адаптивное время на ход (в секундах)
 # ------------------------------------------------------------------
 def get_move_time_from_clock(clock_event):
     increment = clock_event.get('increment', 0)
-    if increment <= 1:          # пуля (0-1 сек)
+    if increment <= 1:      # пуля
         return 0.5
-    elif increment <= 3:        # блиц (2-3 сек)
+    elif increment <= 3:    # блиц
         return 2.0
-    else:                       # рапид/классика
+    else:                   # рапид/классика
         return 5.0
 
 # ------------------------------------------------------------------
-# Инициализация движков (Stockfish, Berserk, Clover)
+# Инициализация движков
 # ------------------------------------------------------------------
 def init_engines():
     global engines
     engines = {}
     try:
-        # Stockfish 18 (лидер)
-        print("Загружаем Stockfish 18 (лидер)...")
-        stockfish = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
-        stockfish.configure({
+        # Stockfish (лидер)
+        print("Загружаем Stockfish 18...")
+        sf = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
+        sf.configure({
             "Skill Level": 20,
-            "Hash": STOCKFISH_HASH_MB,
-            "Threads": STOCKFISH_THREADS,
+            "Hash": 256,
+            "Threads": 2,
             "Contempt": 0,
             "Move Overhead": 100,
             "Slow Mover": 100,
         })
-        if TABLEBASE_PATH and Path(TABLEBASE_PATH).exists():
-            stockfish.configure({"SyzygyPath": TABLEBASE_PATH, "SyzygyProbeDepth": 1})
-        engines['stockfish'] = stockfish
+        engines['stockfish'] = sf
 
-        # Berserk
-        if Path(BERZERK_PATH).exists():
+        # Berserk (если файл существует)
+        if os.path.exists(BERSERK_PATH):
             print("Загружаем Berserk...")
-            berserk_eng = chess.engine.SimpleEngine.popen_uci(BERZERK_PATH)
-            berserk_eng.configure({
+            be = chess.engine.SimpleEngine.popen_uci(BERSERK_PATH)
+            be.configure({
                 "Skill Level": 20,
-                "Hash": OTHER_ENGINE_HASH_MB,
-                "Threads": OTHER_ENGINE_THREADS,
+                "Hash": 128,
+                "Threads": 1,
                 "Contempt": 15,
             })
-            engines['berserk'] = berserk_eng
+            engines['berserk'] = be
+        else:
+            print("Berserk не найден, пропускаем")
 
-        # Clover
-        if Path(CLOVER_PATH).exists():
+        # Clover (если файл существует)
+        if os.path.exists(CLOVER_PATH):
             print("Загружаем Clover...")
-            clover_eng = chess.engine.SimpleEngine.popen_uci(CLOVER_PATH)
-            clover_eng.configure({
+            ce = chess.engine.SimpleEngine.popen_uci(CLOVER_PATH)
+            ce.configure({
                 "Skill Level": 20,
-                "Hash": OTHER_ENGINE_HASH_MB,
-                "Threads": OTHER_ENGINE_THREADS,
+                "Hash": 128,
+                "Threads": 1,
                 "Contempt": 0,
             })
-            engines['clover'] = clover_eng
+            engines['clover'] = ce
+        else:
+            print("Clover не найден, пропускаем")
 
         print(f"Загружено движков: {len(engines)}")
-    except Exception as e:
-        print(f"Ошибка при загрузке движков: {e}")
-        traceback.print_exc()
         if not engines:
-            sys.exit(1)
+            raise RuntimeError("Не загружен ни один движок")
+    except Exception as e:
+        print(f"Ошибка загрузки движков: {e}")
+        traceback.print_exc()
+        sys.exit(1)
 
 # ------------------------------------------------------------------
-# Выбор лучшего хода (дебютная книга + голосование движков)
+# Голосование: выбираем лучший ход
 # ------------------------------------------------------------------
 def get_best_move(board, move_time):
-    # 1. Дебютная книга
-    if OPENING_BOOK_PATH and Path(OPENING_BOOK_PATH).exists():
-        try:
-            with chess.polyglot.open_reader(OPENING_BOOK_PATH) as reader:
-                for entry in reader.find_all(board):
-                    move = entry.move()
-                    print(f"Ход из дебютной книги: {move.uci()}")
-                    return move.uci()
-        except Exception as e:
-            print(f"Ошибка чтения дебютной книги: {e}")
-
-    # 2. Опрос движков
-    candidates = defaultdict(list)
+    candidates = {}
     for name, eng in engines.items():
         try:
-            # Анализ с ограничением по времени
             analysis = eng.analyse(board, chess.engine.Limit(time=move_time))
             move = analysis.get('pv')[0] if analysis.get('pv') else None
             score = analysis.get('score')
             if not move:
                 continue
-            # Преобразуем оценку в числовой вес
+            # Нормализуем оценку
             if score.is_mate():
                 weight = 10000 if score.mate() > 0 else -10000
             else:
                 w = score.white().score() if board.turn == chess.WHITE else -score.white().score()
                 weight = max(-500, min(500, w)) / 100.0
-            candidates[move.uci()].append(weight)
+            move_uci = move.uci()
+            candidates.setdefault(move_uci, []).append(weight)
         except Exception as e:
             print(f"Ошибка движка {name}: {e}")
-
     if not candidates:
         return None
-    # Выбираем ход с максимальной средней оценкой
-    best_move = max(candidates.items(), key=lambda x: sum(x[1]) / len(x[1]))
-    print(f"Голосование: выбран {best_move[0]} (оценки: {best_move[1]})")
-    return best_move[0]
+    # Ход с максимальной средней оценкой
+    best = max(candidates.items(), key=lambda x: sum(x[1]) / len(x[1]))
+    print(f"Голосование: выбран {best[0]} (оценки: {best[1]})")
+    return best[0]
 
 # ------------------------------------------------------------------
 # Отправка хода с повторными попытками
@@ -199,7 +153,7 @@ def make_move_with_retry(game_id, board, move_time):
             sys.stdout.flush()
             return True
         except (berserk.exceptions.ApiError, requests.exceptions.ConnectionError) as e:
-            print(f"[{game_id}] Ошибка хода (попытка {attempt+1}/3): {e}")
+            print(f"[{game_id}] Ошибка (попытка {attempt+1}/3): {e}")
             if attempt < 2:
                 time.sleep(2 ** attempt)
             else:
@@ -211,18 +165,24 @@ def make_move_with_retry(game_id, board, move_time):
     return False
 
 # ------------------------------------------------------------------
-# Игровой процесс (один поток на партию)
+# Обработка партии (с отправкой сообщений)
 # ------------------------------------------------------------------
 def play_game(game_id, initial_fen):
     global active_games
     with games_lock:
         active_games += 1
         print(f"[{game_id}] Активных игр: {active_games}")
-
     try:
         board = chess.Board(initial_fen) if initial_fen else chess.Board()
-        print(f"[{game_id}] Начальная позиция: {board.fen()}")
+        print(f"[{game_id}] Старт: {board.fen()}")
         sys.stdout.flush()
+
+        # --- Отправляем приветствие в чат ---
+        try:
+            client.bots.post_message(game_id, "Привет! Да будет хорошая игра!", spectator=False)
+            print(f"[{game_id}] Приветствие отправлено.")
+        except Exception as e:
+            print(f"[{game_id}] Не удалось отправить приветствие: {e}")
 
         my_id = client.account.get()['id']
         white_id = black_id = None
@@ -241,14 +201,14 @@ def play_game(game_id, initial_fen):
                         black_id = event.get('black', {}).get('id')
                         moves = event.get('state', {}).get('moves', '')
                         if moves:
-                            for move in moves.split():
-                                board.push_uci(move)
+                            for m in moves.split():
+                                board.push_uci(m)
                     elif event['type'] == 'gameState':
                         moves = event.get('moves', '')
                         if moves:
-                            current = moves.split()
-                            while len(current) > len(board.move_stack):
-                                board.push_uci(current[len(board.move_stack)])
+                            cur = moves.split()
+                            while len(cur) > len(board.move_stack):
+                                board.push_uci(cur[len(board.move_stack)])
                         if white_id is None:
                             white_id = event.get('white', {}).get('id')
                         if black_id is None:
@@ -257,29 +217,27 @@ def play_game(game_id, initial_fen):
                         continue
 
                     if event.get('status') and event.get('status') != 'started':
-                        print(f"[{game_id}] Игра завершена. Статус: {event.get('status')}")
+                        print(f"[{game_id}] Завершена: {event.get('status')}")
                         return
 
                     if white_id is None or black_id is None:
                         continue
 
                     if board.turn == chess.WHITE and white_id == my_id:
-                        print(f"[{game_id}] Ход белых (время {move_time}s)")
                         if not made_first_move:
                             made_first_move = True
                         make_move_with_retry(game_id, board, move_time)
                     elif board.turn == chess.BLACK and black_id == my_id:
-                        print(f"[{game_id}] Ход чёрных (время {move_time}s)")
                         if not made_first_move:
                             made_first_move = True
                         make_move_with_retry(game_id, board, move_time)
 
             except (berserk.exceptions.ApiError, requests.exceptions.ConnectionError) as e:
-                print(f"[{game_id}] Ошибка потока игры: {e}. Переподключение через 5 сек...")
+                print(f"[{game_id}] Ошибка потока: {e}. Переподключение через 5 сек...")
                 time.sleep(5)
                 continue
             except Exception as e:
-                print(f"[{game_id}] Критическая ошибка в игре: {e}")
+                print(f"[{game_id}] Критическая ошибка: {e}")
                 traceback.print_exc()
                 break
     except Exception as e:
@@ -289,42 +247,39 @@ def play_game(game_id, initial_fen):
         with games_lock:
             active_games -= 1
             print(f"[{game_id}] Активных игр: {active_games}")
+        # --- Отправляем прощальное сообщение в чат ---
+        try:
+            client.bots.post_message(game_id, "GG! Было интересно.", spectator=False)
+            print(f"[{game_id}] Сообщение 'GG' отправлено.")
+        except Exception as e:
+            print(f"[{game_id}] Не удалось отправить сообщение: {e}")
 
 # ------------------------------------------------------------------
-# Проверка и восстановление активных игр при старте
+# Ручной вызов через HTTP
 # ------------------------------------------------------------------
-def resume_active_games():
-    """При запуске бота находит все текущие игры аккаунта и подключается к ним."""
+@app.get("/challenge/{username}")
+def manual_challenge(username: str):
     try:
-        print("Проверяем активные игры...")
-        # Получаем список текущих игр бота (используем API account)
-        ongoing = client.games.get_ongoing()
-        for game in ongoing:
-            game_id = game['gameId']
-            initial_fen = game.get('initialFen')
-            print(f"Найдена активная игра {game_id}, подключаемся...")
-            threading.Thread(target=play_game, args=(game_id, initial_fen), daemon=True).start()
-        print(f"Восстановлено игр: {len(ongoing)}")
+        clock = 5 * 60
+        client.challenges.create(
+            username=username,
+            rated=True,
+            clock_limit=clock,
+            clock_increment=3,
+            color="random",
+            variant="standard"
+        )
+        return {"status": "ok", "message": f"Challenge sent to {username}"}
     except Exception as e:
-        print(f"Ошибка при восстановлении активных игр: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ------------------------------------------------------------------
-# Основной цикл бота (приём вызовов)
+# Основной поток
 # ------------------------------------------------------------------
 def run_bot():
     init_engines()
-
     print("Бот запущен. Ожидание вызовов...")
     sys.stdout.flush()
-
-    # Восстановить активные игры (если бот перезапустился)
-    resume_active_games()
-
-    # Активная рассылка вызовов (отключена по умолчанию – только ручные)
-    # Если хотите включить, раскомментируйте:
-    # challenger_thread = threading.Thread(target=challenge_loop, daemon=True)
-    # challenger_thread.start()
-    # print("Поток рассылки вызовов запущен")
 
     my_id = client.account.get()['id']
     print(f"Мой ID: {my_id}")
@@ -333,44 +288,29 @@ def run_bot():
         try:
             event_stream = client.bots.stream_incoming_events()
             for event in event_stream:
-                print(f"Входящее событие: {event['type']}")
-                sys.stdout.flush()
                 if event['type'] == 'challenge':
-                    try:
-                        ch = event['challenge']
-                        challenger = ch['challenger']['id']
-                        if challenger == my_id:
-                            print(f"Пропускаем собственный вызов {ch['id']}")
-                            continue
-                        print(f"Получен вызов от {challenger}")
-                        initial_fen = ch.get('initialFen')
-                        client.bots.accept_challenge(ch['id'])
-                        print(f"Вызов принят")
-                        threading.Thread(
-                            target=play_game,
-                            args=(ch['id'], initial_fen),
-                            daemon=True
-                        ).start()
-                    except Exception as e:
-                        print(f"Ошибка принятия вызова: {e}")
-                        traceback.print_exc()
+                    ch = event['challenge']
+                    challenger = ch['challenger']['id']
+                    if challenger == my_id:
+                        continue
+                    print(f"Получен вызов от {challenger}")
+                    initial_fen = ch.get('initialFen')
+                    client.bots.accept_challenge(ch['id'])
+                    threading.Thread(
+                        target=play_game,
+                        args=(ch['id'], initial_fen),
+                        daemon=True
+                    ).start()
         except (berserk.exceptions.ApiError, requests.exceptions.ConnectionError) as e:
-            if isinstance(e, berserk.exceptions.ApiError) and hasattr(e, 'response') and e.response is not None:
-                if e.response.status_code == 429:
-                    print("429 Too Many Requests. Пауза 5 минут.")
-                    time.sleep(300)
-                    continue
-            print(f"Ошибка соединения: {e}. Переподключение через 30 сек...")
-            time.sleep(30)
-            continue
+            if hasattr(e, 'response') and e.response and e.response.status_code == 429:
+                print("429 Too Many Requests. Пауза 5 минут.")
+                time.sleep(300)
+            else:
+                print(f"Ошибка соединения: {e}. Пауза 30 сек.")
+                time.sleep(30)
         except Exception as e:
             print(f"Неожиданная ошибка: {e}")
             traceback.print_exc()
             time.sleep(30)
-            continue
 
-# ------------------------------------------------------------------
-# Запуск
-# ------------------------------------------------------------------
-thread = threading.Thread(target=run_bot, daemon=True)
-thread.start()
+threading.Thread(target=run_bot, daemon=True).start()
