@@ -8,7 +8,7 @@ import chess
 import chess.engine
 import berserk
 import requests
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 # ------------------------------------------------------------------
 # Настройки
@@ -41,6 +41,49 @@ games_lock = threading.Lock()
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+# ------------------------------------------------------------------
+# --- НОВАЯ ФУНКЦИЯ ЧАТА: Отправка приветствия ---
+# ------------------------------------------------------------------
+def send_greeting(game_id, opponent_username):
+    """Отправляет приветственное сообщение сопернику в начале игры."""
+    greetings = [
+        f"Привет, {opponent_username}! Желаю хорошей игры! 🤝",
+        f"Здравствуй, {opponent_username}. Да победит сильнейший. 🧠",
+        f"Надеюсь на интересную партию, {opponent_username}! 🎉",
+    ]
+    message = random.choice(greetings)
+    try:
+        client.bots.post_message(game_id, message, spectator=False)
+        print(f"[{game_id}] Приветствие отправлено: {message}")
+    except Exception as e:
+        print(f"[{game_id}] Не удалось отправить приветствие: {e}")
+
+# ------------------------------------------------------------------
+# --- НОВАЯ ФУНКЦИЯ ЧАТА: Отправка сообщения по результату игры ---
+# ------------------------------------------------------------------
+def send_game_result_message(game_id, board, my_id):
+    """Анализирует исход партии и отправляет соответствующее сообщение."""
+    result_message = None
+    # 1. Проверяем, не закончилась ли игра матом
+    if board.is_checkmate():
+        if board.turn == my_id: # Мы получили мат
+            result_message = "😞 Это был мат. Отличная игра, поздравляю!"
+        else: # Мы поставили мат
+            result_message = "🏆 Мат! Было приятно сыграть, спасибо за партию!"
+    # 2. Если не мат, проверяем на пат или недостаток материала
+    elif board.is_stalemate() or board.is_insufficient_material():
+        result_message = "🤝 Ничья. Это было напряжённое сражение!"
+    # 3. Если игра прервана по другим причинам (таймаут, отказ)
+    elif board.is_game_over():
+        result_message = "Игра завершена. Спасибо за партию! 👋"
+    
+    if result_message:
+        try:
+            client.bots.post_message(game_id, result_message, spectator=False)
+            print(f"[{game_id}] Сообщение об итоге игры отправлено: {result_message}")
+        except Exception as e:
+            print(f"[{game_id}] Не удалось отправить сообщение об итоге игры: {e}")
 
 # ------------------------------------------------------------------
 # Адаптивное время на ход (в секундах)
@@ -165,7 +208,7 @@ def make_move_with_retry(game_id, board, move_time):
     return False
 
 # ------------------------------------------------------------------
-# Обработка партии (с отправкой сообщений)
+# Обработка партии (с интегрированными функциями чата)
 # ------------------------------------------------------------------
 def play_game(game_id, initial_fen):
     global active_games
@@ -177,14 +220,8 @@ def play_game(game_id, initial_fen):
         print(f"[{game_id}] Старт: {board.fen()}")
         sys.stdout.flush()
 
-        # --- Отправляем приветствие в чат ---
-        try:
-            client.bots.post_message(game_id, "Привет! Да будет хорошая игра!", spectator=False)
-            print(f"[{game_id}] Приветствие отправлено.")
-        except Exception as e:
-            print(f"[{game_id}] Не удалось отправить приветствие: {e}")
-
         my_id = client.account.get()['id']
+        # Получаем никнейм соперника для приветствия
         white_id = black_id = None
         made_first_move = False
         move_time = 5.0
@@ -199,6 +236,10 @@ def play_game(game_id, initial_fen):
                     if event['type'] == 'gameFull':
                         white_id = event.get('white', {}).get('id')
                         black_id = event.get('black', {}).get('id')
+                        # --- ИНТЕГРАЦИЯ ФУНКЦИИ ЧАТА: Приветствие ---
+                        opponent_username = black_id if white_id == my_id else white_id
+                        send_greeting(game_id, opponent_username)
+                        # --- ------------------------------------ ---
                         moves = event.get('state', {}).get('moves', '')
                         if moves:
                             for m in moves.split():
@@ -218,6 +259,9 @@ def play_game(game_id, initial_fen):
 
                     if event.get('status') and event.get('status') != 'started':
                         print(f"[{game_id}] Завершена: {event.get('status')}")
+                        # --- ИНТЕГРАЦИЯ ФУНКЦИИ ЧАТА: Сообщение о результате ---
+                        send_game_result_message(game_id, board, my_id)
+                        # --- -------------------------------------------- ---
                         return
 
                     if white_id is None or black_id is None:
@@ -247,12 +291,6 @@ def play_game(game_id, initial_fen):
         with games_lock:
             active_games -= 1
             print(f"[{game_id}] Активных игр: {active_games}")
-        # --- Отправляем прощальное сообщение в чат ---
-        try:
-            client.bots.post_message(game_id, "GG! Было интересно.", spectator=False)
-            print(f"[{game_id}] Сообщение 'GG' отправлено.")
-        except Exception as e:
-            print(f"[{game_id}] Не удалось отправить сообщение: {e}")
 
 # ------------------------------------------------------------------
 # Ручной вызов через HTTP
