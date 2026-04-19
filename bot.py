@@ -43,7 +43,7 @@ def health():
     return {"status": "ok"}
 
 # ------------------------------------------------------------------
-# --- НОВАЯ ФУНКЦИЯ ЧАТА: Отправка приветствия ---
+# Функции чата
 # ------------------------------------------------------------------
 def send_greeting(game_id, opponent_username):
     """Отправляет приветственное сообщение сопернику в начале игры."""
@@ -59,22 +59,16 @@ def send_greeting(game_id, opponent_username):
     except Exception as e:
         print(f"[{game_id}] Не удалось отправить приветствие: {e}")
 
-# ------------------------------------------------------------------
-# --- НОВАЯ ФУНКЦИЯ ЧАТА: Отправка сообщения по результату игры ---
-# ------------------------------------------------------------------
 def send_game_result_message(game_id, board, my_id):
     """Анализирует исход партии и отправляет соответствующее сообщение."""
     result_message = None
-    # 1. Проверяем, не закончилась ли игра матом
     if board.is_checkmate():
-        if board.turn == my_id: # Мы получили мат
+        if board.turn == my_id:
             result_message = "😞 Это был мат. Отличная игра, поздравляю!"
-        else: # Мы поставили мат
+        else:
             result_message = "🏆 Мат! Было приятно сыграть, спасибо за партию!"
-    # 2. Если не мат, проверяем на пат или недостаток материала
     elif board.is_stalemate() or board.is_insufficient_material():
         result_message = "🤝 Ничья. Это было напряжённое сражение!"
-    # 3. Если игра прервана по другим причинам (таймаут, отказ)
     elif board.is_game_over():
         result_message = "Игра завершена. Спасибо за партию! 👋"
     
@@ -221,7 +215,6 @@ def play_game(game_id, initial_fen):
         sys.stdout.flush()
 
         my_id = client.account.get()['id']
-        # Получаем никнейм соперника для приветствия
         white_id = black_id = None
         made_first_move = False
         move_time = 5.0
@@ -236,10 +229,10 @@ def play_game(game_id, initial_fen):
                     if event['type'] == 'gameFull':
                         white_id = event.get('white', {}).get('id')
                         black_id = event.get('black', {}).get('id')
-                        # --- ИНТЕГРАЦИЯ ФУНКЦИИ ЧАТА: Приветствие ---
+                        # --- Приветствие ---
                         opponent_username = black_id if white_id == my_id else white_id
                         send_greeting(game_id, opponent_username)
-                        # --- ------------------------------------ ---
+                        # --- --------- ---
                         moves = event.get('state', {}).get('moves', '')
                         if moves:
                             for m in moves.split():
@@ -259,9 +252,7 @@ def play_game(game_id, initial_fen):
 
                     if event.get('status') and event.get('status') != 'started':
                         print(f"[{game_id}] Завершена: {event.get('status')}")
-                        # --- ИНТЕГРАЦИЯ ФУНКЦИИ ЧАТА: Сообщение о результате ---
                         send_game_result_message(game_id, board, my_id)
-                        # --- -------------------------------------------- ---
                         return
 
                     if white_id is None or black_id is None:
