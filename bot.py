@@ -26,9 +26,8 @@ def send_greeting(game_id, opponent):
     msg = random.choice([f"Привет, {opponent}! 🤝", f"Здравствуй, {opponent}. Да победит сильнейший! 🧠"])
     try:
         client.bots.post_message(game_id, msg, spectator=False)
-        print(f"[{game_id}] {msg}")
-    except Exception as e:
-        print(f"[{game_id}] Ошибка чата: {e}")
+    except:
+        pass
 
 def send_game_result(game_id, board, my_id):
     if board.is_checkmate():
@@ -50,22 +49,22 @@ def init_engine():
     global engine
     print("Загружаем Stockfish 18...")
     engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
+    # Экономичные настройки для Render Free Tier (512 MB)
     engine.configure({
         "Skill Level": 20,
         "Hash": 256,
-        "Threads": 2,
-        "Contempt": 0,
-        "Move Overhead": 100,
+        "Threads": 1,
+        "Move Overhead": 200,
         "Slow Mover": 100,
     })
-    print("Stockfish загружен на максимальную силу.")
+    print("Stockfish загружен и настроен.")
 
 def get_best_move(board, move_time):
     try:
         result = engine.play(board, chess.engine.Limit(time=move_time))
         return result.move.uci() if result.move else None
     except Exception as e:
-        print(f"Ошибка хода: {e}")
+        print(f"Ошибка при ходе: {e}")
         return None
 
 def make_move_with_retry(game_id, board, move_time):
@@ -98,7 +97,6 @@ def play_game(game_id, initial_fen):
                 for event in stream:
                     if 'clock' in event:
                         move_time = get_move_time(event['clock'])
-
                     if event['type'] == 'gameFull':
                         white_id = event.get('white', {}).get('id')
                         black_id = event.get('black', {}).get('id')
@@ -120,19 +118,15 @@ def play_game(game_id, initial_fen):
                             black_id = event.get('black', {}).get('id')
                     else:
                         continue
-
                     if event.get('status') and event.get('status') != 'started':
                         send_game_result(game_id, board, my_id)
                         return
-
                     if white_id is None or black_id is None:
                         continue
-
                     if board.turn == chess.WHITE and white_id == my_id:
                         make_move_with_retry(game_id, board, move_time)
                     elif board.turn == chess.BLACK and black_id == my_id:
                         make_move_with_retry(game_id, board, move_time)
-
             except (berserk.exceptions.ApiError, requests.exceptions.ConnectionError) as e:
                 print(f"[{game_id}] Ошибка соединения: {e}. Переподключение...")
                 time.sleep(5)
