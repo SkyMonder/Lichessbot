@@ -7,8 +7,8 @@ echo "=== Установка движков ==="
 echo "Скачиваем Stockfish 18..."
 wget -q https://github.com/official-stockfish/Stockfish/releases/download/sf_18/stockfish-ubuntu-x86-64-bmi2.tar
 tar -xf stockfish-ubuntu-x86-64-bmi2.tar
-# Удаляем старый файл, если он существует
-rm -f ./stockfish
+# Удаляем старую папку или файл, если они есть
+rm -rf ./stockfish
 # Перемещаем файл из папки stockfish в корень
 mv stockfish/stockfish-ubuntu-x86-64-bmi2 ./stockfish
 # Удаляем временную папку
@@ -20,7 +20,7 @@ echo "Скачиваем Berserk..."
 wget -q https://github.com/jhonnold/berserk/releases/download/20250218/berserk-20250218-linux.zip
 python3 -c "import zipfile; zipfile.ZipFile('berserk-20250218-linux.zip').extractall()"
 if [ -f "berserk-20250218-linux/berserk" ]; then
-    rm -f ./berserk_engine
+    rm -rf ./berserk_engine
     mv berserk-20250218-linux/berserk ./berserk_engine
     chmod +x ./berserk_engine
 else
@@ -33,7 +33,7 @@ echo "Скачиваем Clover..."
 wget -q https://github.com/lucametehau/CloverEngine/releases/download/3.0.3/clover_3.0.3_linux.zip
 python3 -c "import zipfile; zipfile.ZipFile('clover_3.0.3_linux.zip').extractall()"
 if [ -f "clover_3.0.3_linux/clover" ]; then
-    rm -f ./clover_engine
+    rm -rf ./clover_engine
     mv clover_3.0.3_linux/clover ./clover_engine
     chmod +x ./clover_engine
 else
