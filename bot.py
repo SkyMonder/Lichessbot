@@ -4,8 +4,6 @@ from fastapi import FastAPI, HTTPException
 
 TOKEN = os.environ.get("LICHESS_TOKEN")
 STOCKFISH_PATH = "./stockfish"
-BERSERK_PATH = "./berserk_engine"
-CLOVER_PATH = "./clover_engine"
 
 if not TOKEN:
     raise RuntimeError("LICHESS_TOKEN environment variable not set")
@@ -15,7 +13,7 @@ client = berserk.Client(session)
 app = FastAPI()
 running = True
 
-engines = {}
+engine = None
 engine_lock = threading.Lock()
 active_games = 0
 games_lock = threading.Lock()
@@ -24,7 +22,6 @@ games_lock = threading.Lock()
 def health():
     return {"status": "ok"}
 
-# ---------- Чат ----------
 def send_greeting(game_id, opponent):
     msg = random.choice([f"Привет, {opponent}! 🤝", f"Здравствуй, {opponent}. Да победит сильнейший! 🧠"])
     try:
@@ -45,65 +42,31 @@ def send_game_result(game_id, board, my_id):
     except:
         pass
 
-# ---------- Адаптивное время ----------
 def get_move_time(clock):
     inc = clock.get('increment', 0)
     return 0.5 if inc <= 1 else 2.0 if inc <= 3 else 5.0
 
-# ---------- Загрузка движков ----------
-def init_engines():
-    global engines
-    # Stockfish
-    print("Загрузка Stockfish 18...")
-    sf = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
-    sf.configure({"Skill Level": 20, "Hash": 256, "Threads": 2})
-    engines['stockfish'] = sf
+def init_engine():
+    global engine
+    print("Загружаем Stockfish 18...")
+    engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
+    engine.configure({
+        "Skill Level": 20,
+        "Hash": 256,
+        "Threads": 2,
+        "Contempt": 0,
+        "Move Overhead": 100,
+        "Slow Mover": 100,
+    })
+    print("Stockfish загружен на максимальную силу.")
 
-    # Berserk (если есть)
-    if os.path.exists(BERSERK_PATH):
-        try:
-            print("Загрузка Berserk...")
-            be = chess.engine.SimpleEngine.popen_uci(BERSERK_PATH)
-            be.configure({"Skill Level": 20, "Hash": 128, "Threads": 1})
-            engines['berserk'] = be
-        except Exception as e:
-            print(f"Berserk не загружен: {e}")
-
-    # Clover (если есть)
-    if os.path.exists(CLOVER_PATH):
-        try:
-            print("Загрузка Clover...")
-            ce = chess.engine.SimpleEngine.popen_uci(CLOVER_PATH)
-            ce.configure({"Skill Level": 20, "Hash": 128, "Threads": 1})
-            engines['clover'] = ce
-        except Exception as e:
-            print(f"Clover не загружен: {e}")
-
-    print(f"Загружено движков: {len(engines)}")
-
-# ---------- Голосование ----------
 def get_best_move(board, move_time):
-    candidates = {}
-    for name, eng in engines.items():
-        try:
-            analysis = eng.analyse(board, chess.engine.Limit(time=move_time))
-            move = analysis.get('pv')[0] if analysis.get('pv') else None
-            if not move:
-                continue
-            score = analysis.get('score')
-            if score.is_mate():
-                weight = 10000 if score.mate() > 0 else -10000
-            else:
-                w = score.white().score() if board.turn == chess.WHITE else -score.white().score()
-                weight = max(-500, min(500, w)) / 100.0
-            candidates[move.uci()] = candidates.get(move.uci(), []) + [weight]
-        except Exception as e:
-            print(f"Ошибка {name}: {e}")
-    if not candidates:
+    try:
+        result = engine.play(board, chess.engine.Limit(time=move_time))
+        return result.move.uci() if result.move else None
+    except Exception as e:
+        print(f"Ошибка хода: {e}")
         return None
-    best_move = max(candidates.items(), key=lambda x: sum(x[1])/len(x[1]))
-    print(f"Голосование: {best_move[0]} (средняя оценка {sum(best_move[1])/len(best_move[1]):.2f})")
-    return best_move[0]
 
 def make_move_with_retry(game_id, board, move_time):
     for attempt in range(3):
@@ -120,7 +83,6 @@ def make_move_with_retry(game_id, board, move_time):
             time.sleep(2**attempt)
     return False
 
-# ---------- Игровой цикл ----------
 def play_game(game_id, initial_fen):
     global active_games
     with games_lock:
@@ -140,10 +102,7 @@ def play_game(game_id, initial_fen):
                     if event['type'] == 'gameFull':
                         white_id = event.get('white', {}).get('id')
                         black_id = event.get('black', {}).get('id')
-                        if white_id == my_id:
-                            opponent = black_id
-                        else:
-                            opponent = white_id
+                        opponent = black_id if white_id == my_id else white_id
                         send_greeting(game_id, opponent)
                         moves = event.get('state', {}).get('moves', '')
                         if moves:
@@ -188,7 +147,6 @@ def play_game(game_id, initial_fen):
         with games_lock:
             active_games -= 1
 
-# ---------- Ручной вызов ----------
 @app.get("/challenge/{username}")
 def manual_challenge(username: str):
     try:
@@ -197,9 +155,8 @@ def manual_challenge(username: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ---------- Основной цикл ----------
 def run_bot():
-    init_engines()
+    init_engine()
     print("Бот запущен. Ожидание вызовов...")
     my_id = client.account.get()['id']
     while running:
