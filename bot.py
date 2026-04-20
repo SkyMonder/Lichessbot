@@ -43,16 +43,21 @@ def send_game_result(game_id, board, my_id):
 
 def get_move_time(clock):
     inc = clock.get('increment', 0)
-    return 0.5 if inc <= 1 else 2.0 if inc <= 3 else 5.0
+    # Укороченное время для пули, блица, рапида
+    if inc <= 1:      # пуля (0-1 сек добавки)
+        return 0.5
+    elif inc <= 3:    # блиц (2-3 сек)
+        return 2.0
+    else:             # рапид/классика
+        return 5.0
 
 def init_engine():
     global engine
     print("Загружаем Stockfish 18...")
     engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
-    # Только поддерживаемые опции
     engine.configure({
         "Skill Level": 20,
-        "Hash": 256,
+        "Hash": 128,
         "Threads": 1,
         "Move Overhead": 200,
     })
