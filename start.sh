@@ -11,10 +11,10 @@ cd ..
 rm -rf temp_stockfish
 chmod +x ./stockfish
 
-echo "=== Превращаем аккаунт в бота ==="
+echo "=== Превращаем аккаунт в бота (если ещё не бот) ==="
 curl -X POST -d '' https://lichess.org/api/bot/account/upgrade \
      -H "Authorization: Bearer $LICHESS_TOKEN" \
-     -w "\nHTTP status: %{http_code}\n" || echo "Аккаунт уже бот"
+     -w "\nHTTP status: %{http_code}\n" || echo "Аккаунт уже бот или ошибка"
 
 echo "=== Запускаем бота ==="
 exec gunicorn -k uvicorn.workers.UvicornWorker -b 0.0.0.0:$PORT bot:app
