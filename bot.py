@@ -49,13 +49,12 @@ def init_engine():
     global engine
     print("Загружаем Stockfish 18...")
     engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
-    # Экономичные настройки для Render Free Tier (512 MB)
+    # Только поддерживаемые опции
     engine.configure({
         "Skill Level": 20,
         "Hash": 256,
         "Threads": 1,
         "Move Overhead": 200,
-        "Slow Mover": 100,
     })
     print("Stockfish загружен и настроен.")
 
@@ -150,7 +149,12 @@ def manual_challenge(username: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 def run_bot():
-    init_engine()
+    try:
+        init_engine()
+    except Exception as e:
+        print(f"Критическая ошибка при загрузке движка: {e}")
+        traceback.print_exc()
+        return
     print("Бот запущен. Ожидание вызовов...")
     my_id = client.account.get()['id']
     while running:
