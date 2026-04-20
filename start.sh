@@ -19,12 +19,14 @@ if [ -z "$BINARY" ]; then
     exit 1
 fi
 echo "Найден бинарник: $BINARY"
-# Удаляем старый файл или папку ./stockfish
-rm -rf ./stockfish
-# Перемещаем бинарник в корень с именем stockfish
-mv "$BINARY" ./stockfish
-# Удаляем временную папку
+# Копируем бинарник во временный файл
+cp "$BINARY" ./stockfish_temp
+# Удаляем старую папку stockfish
 rm -rf stockfish
+# Удаляем старый файл stockfish, если он существует (например, от предыдущих попыток)
+rm -f ./stockfish
+# Перемещаем временный файл в stockfish
+mv ./stockfish_temp ./stockfish
 chmod +x ./stockfish
 
 # --- Berserk (опционально) ---
