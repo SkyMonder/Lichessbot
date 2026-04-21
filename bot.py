@@ -41,27 +41,53 @@ def send_game_result(game_id, board, my_id):
     except:
         pass
 
-def get_move_time(clock):
+def get_move_time(clock, board):
+    """
+    Агрессивное, но умное управление временем.
+    Возвращает время в секундах, которое бот потратит на ход.
+    """
     inc = clock.get('increment', 0)
-    # Укороченное время для пули, блица, рапида
-    if inc <= 1:      # пуля (0-1 сек добавки)
+    # Определяем, чей сейчас ход
+    if board.turn == chess.WHITE:
+        my_time = clock.get('white', 0)
+    else:
+        my_time = clock.get('black', 0)
+    
+    # Если осталось меньше 0.5 секунды – ходим мгновенно
+    if my_time < 0.5:
+        return 0.01
+    # Если осталось меньше 2 секунд – ходим очень быстро
+    if my_time < 2.0:
+        return 0.05
+    
+    # Пуля (инкремент 0-1)
+    if inc <= 1:
+        if my_time < 5.0:
+            return 0.1
         return 0.5
-    elif inc <= 3:    # блиц (2-3 сек)
-        return 2.0
-    else:             # рапид/классика
-        return 5.0
+    # Блиц (инкремент 2-3)
+    elif inc <= 3:
+        if my_time < 10.0:
+            return 0.3
+        return 1.0
+    # Рапид/классика
+    else:
+        if my_time < 30.0:
+            return 1.0
+        return 3.0
 
 def init_engine():
     global engine
     print("Загружаем Stockfish 18...")
     engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
+    # Максимальные настройки для Render (в пределах 512 MB RAM)
     engine.configure({
         "Skill Level": 20,
-        "Hash": 128,
-        "Threads": 1,
-        "Move Overhead": 200,
+        "Hash": 256,
+        "Threads": 2,
+        "Move Overhead": 100,
     })
-    print("Stockfish загружен и настроен.")
+    print("Stockfish загружен и настроен на максимальную силу.")
 
 def get_best_move(board, move_time):
     try:
@@ -78,12 +104,13 @@ def make_move_with_retry(game_id, board, move_time):
             if not move_uci:
                 return False
             client.bots.make_move(game_id, move_uci)
-            print(f"[{game_id}] >>> {move_uci} ({move_time:.1f}s)")
+            print(f"[{game_id}] >>> {move_uci} ({move_time:.3f}s)")
             sys.stdout.flush()
             return True
         except Exception as e:
             print(f"[{game_id}] Попытка {attempt+1} не удалась: {e}")
-            time.sleep(2**attempt)
+            if attempt < 2:
+                time.sleep(0.2)
     return False
 
 def play_game(game_id, initial_fen):
@@ -94,13 +121,12 @@ def play_game(game_id, initial_fen):
         board = chess.Board(initial_fen) if initial_fen else chess.Board()
         my_id = client.account.get()['id']
         white_id = black_id = None
-        move_time = 5.0
         while True:
             try:
                 stream = client.bots.stream_game_state(game_id)
                 for event in stream:
                     if 'clock' in event:
-                        move_time = get_move_time(event['clock'])
+                        move_time = get_move_time(event['clock'], board)
                     if event['type'] == 'gameFull':
                         white_id = event.get('white', {}).get('id')
                         black_id = event.get('black', {}).get('id')
