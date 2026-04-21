@@ -14,7 +14,8 @@ app = FastAPI()
 running = True
 
 engine = None
-active_games = 0
+engine_lock = threading.Lock()
+active_games = set()          # храним ID активных игр, чтобы не запускать дважды
 games_lock = threading.Lock()
 
 @app.get("/health")
@@ -22,7 +23,7 @@ def health():
     return {"status": "ok"}
 
 def send_greeting(game_id, opponent):
-    msg = random.choice([f"Привет, {opponent}! 🤝", f"Здравствуй, {opponent}. Да победит сильнейший!"])
+    msg = random.choice([f"Привет, {opponent}! 🤝", f"Здравствуй, {opponent}. Да победит сильнейший! 🧠"])
     try:
         client.bots.post_message(game_id, msg, spectator=False)
     except:
@@ -41,74 +42,59 @@ def send_game_result(game_id, board, my_id):
         pass
 
 def get_move_time(clock, board=None):
-    """
-    Агрессивное управление временем, чтобы не проигрывать по времени.
-    clock: {'white': секунды, 'black': секунды, 'increment': секунды}
-    """
     inc = clock.get('increment', 0)
     my_time = clock.get('white' if board and board.turn == chess.WHITE else 'black', 0)
-    
-    # Если осталось меньше 0.5 секунды – ходим мгновенно
-    if my_time < 0.5:
-        return 0.01
-    # Если меньше 1 секунды – очень быстро
     if my_time < 1.0:
         return 0.05
-    
-    # Пуля (инкремент 0-1)
-    if inc <= 1:
-        if my_time < 2.0:
-            return 0.1
-        return 0.3
-    # Блиц (инкремент 2-3)
-    elif inc <= 3:
-        if my_time < 3.0:
-            return 0.2
-        return 0.6
-    # Рапид/классика (инкремент >3)
-    else:
-        if my_time < 10.0:
-            return 0.5
-        return 1.5
+    if inc <= 1:          # пуля
+        return 0.2 if my_time < 3.0 else 0.4
+    elif inc <= 3:        # блиц
+        return 0.5 if my_time < 5.0 else 1.0
+    else:                 # рапид/классика
+        return 1.0 if my_time < 10.0 else 3.0
 
 def init_engine():
     global engine
     print("Загружаем Stockfish 18...")
     engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
-    # Минимальный хеш для экономии памяти (16 MB)
     engine.configure({
         "Skill Level": 20,
-        "Hash": 16,
+        "Hash": 64,
         "Threads": 1,
         "Move Overhead": 50,
     })
-    print("Stockfish загружен (Hash=16 MB).")
+    print("Stockfish загружен.")
 
 def get_best_move(board, move_time):
     try:
         result = engine.play(board, chess.engine.Limit(time=move_time))
         return result.move.uci() if result.move else None
     except Exception as e:
-        print(f"Ошибка при ходе: {e}")
+        print(f"Ошибка хода: {e}")
         return None
 
-def make_move(game_id, board, move_time):
-    try:
-        move_uci = get_best_move(board, move_time)
-        if not move_uci:
-            return False
-        client.bots.make_move(game_id, move_uci)
-        print(f"[{game_id}] >>> {move_uci} ({move_time:.3f}s)")
-        sys.stdout.flush()
-        return True
-    except Exception as e:
-        print(f"[{game_id}] Ошибка: {e}")
-        return False
+def make_move_with_retry(game_id, board, move_time):
+    for attempt in range(2):
+        try:
+            move_uci = get_best_move(board, move_time)
+            if not move_uci:
+                return False
+            client.bots.make_move(game_id, move_uci)
+            print(f"[{game_id}] >>> {move_uci} ({move_time:.3f}s)")
+            sys.stdout.flush()
+            return True
+        except Exception as e:
+            print(f"[{game_id}] Попытка {attempt+1} не удалась: {e}")
+            time.sleep(0.1)
+    return False
 
 def play_game(game_id, initial_fen):
-    global active_games
+    # Проверяем, не запущена ли уже эта игра
     with games_lock:
-        active_games += 1
+        if game_id in active_games:
+            print(f"[{game_id}] Игра уже запущена, пропускаем")
+            return
+        active_games.add(game_id)
     try:
         board = chess.Board(initial_fen) if initial_fen else chess.Board()
         my_id = client.account.get()['id']
@@ -146,12 +132,12 @@ def play_game(game_id, initial_fen):
                     if white_id is None or black_id is None:
                         continue
                     if board.turn == chess.WHITE and white_id == my_id:
-                        make_move(game_id, board, move_time)
+                        make_move_with_retry(game_id, board, move_time)
                     elif board.turn == chess.BLACK and black_id == my_id:
-                        make_move(game_id, board, move_time)
+                        make_move_with_retry(game_id, board, move_time)
             except (berserk.exceptions.ApiError, requests.exceptions.ConnectionError) as e:
                 print(f"[{game_id}] Ошибка соединения: {e}. Переподключение...")
-                time.sleep(3)
+                time.sleep(5)
                 continue
             except Exception as e:
                 print(f"[{game_id}] Критическая ошибка: {e}")
@@ -161,35 +147,48 @@ def play_game(game_id, initial_fen):
         print(f"[{game_id}] Внешняя ошибка: {e}")
     finally:
         with games_lock:
-            active_games -= 1
+            active_games.discard(game_id)
 
 @app.get("/challenge/{username}")
 def manual_challenge(username: str):
     try:
-        client.challenges.create(username=username, rated=True, clock_limit=300, clock_increment=3, color="random")
+        client.challenges.create(
+            username=username,
+            rated=True,
+            clock_limit=300,
+            clock_increment=3,
+            color="random",
+            variant="standard"
+        )
         return {"status": "ok", "message": f"Challenge sent to {username}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 def run_bot():
-    try:
-        init_engine()
-    except Exception as e:
-        print(f"Критическая ошибка при загрузке движка: {e}")
-        traceback.print_exc()
-        return
+    init_engine()
     print("Бот запущен. Ожидание вызовов...")
     my_id = client.account.get()['id']
+    print(f"Мой ID: {my_id}")
     while running:
         try:
             for event in client.bots.stream_incoming_events():
+                print(f"Входящее событие: {event.get('type')}")
                 if event['type'] == 'challenge':
                     ch = event['challenge']
                     if ch['challenger']['id'] == my_id:
+                        # Это наш собственный вызов, не принимаем его, но и не пропускаем — игра начнётся по gameStart
+                        print(f"Собственный вызов {ch['id']}, ожидаем gameStart")
                         continue
-                    print(f"Вызов от {ch['challenger']['id']} принят")
+                    print(f"Получен вызов от {ch['challenger']['id']}")
                     client.bots.accept_challenge(ch['id'])
+                    print(f"Вызов принят, ID игры: {ch['id']}")
                     threading.Thread(target=play_game, args=(ch['id'], ch.get('initialFen')), daemon=True).start()
+                elif event['type'] == 'gameStart':
+                    game = event['game']
+                    game_id = game['id']
+                    initial_fen = game.get('initialFen')
+                    print(f"Начало игры {game_id} (наш вызов был принят)")
+                    threading.Thread(target=play_game, args=(game_id, initial_fen), daemon=True).start()
         except Exception as e:
             print(f"Ошибка в главном цикле: {e}. Пауза 30 сек.")
             time.sleep(30)
