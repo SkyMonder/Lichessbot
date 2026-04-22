@@ -44,49 +44,27 @@ def send_game_result(game_id, board, my_id):
         pass
 
 def get_move_time(clock, board=None):
-    """
-    Умное распределение времени на ход.
-    clock: {'white': 60.0, 'black': 60.0, 'increment': 3}
-    """
     my_time = clock.get('white' if board and board.turn == chess.WHITE else 'black', 0)
     inc = clock.get('increment', 0)
     moves_made = len(board.move_stack) if board else 0
-    
-    # Если времени почти нет, ходим мгновенно
     if my_time < 1.0:
         return 0.05
-    
-    # В пуле (инкремент 0-1) нужно очень быстро
     if inc <= 1:
         if my_time < 5.0:
             return 0.2
-        # В начале партии можно подумать чуть дольше
-        if moves_made < 10:
-            return 0.5
-        return 0.3
-    
-    # В блице (инкремент 2-3)
+        return 0.5 if moves_made < 10 else 0.3
     elif inc <= 3:
         if my_time < 10.0:
             return 0.5
-        # В середине партии выделяем больше времени
         if moves_made < 20:
             return 1.0
-        # В эндшпиле можно быстрее
-        if moves_made > 40:
-            return 0.8
-        return 1.2
-    
-    # В рапиде/классике
+        return 0.8 if moves_made > 40 else 1.2
     else:
         if my_time < 20.0:
             return 1.0
-        # В начале выделяем 3-4 секунды на важные ходы
         if moves_made < 15:
             return 3.0
-        if moves_made < 40:
-            return 2.5
-        return 2.0
+        return 2.5 if moves_made < 40 else 2.0
 
 def get_best_move_from_engines(fen, move_time):
     candidates = {}
@@ -104,7 +82,6 @@ def get_best_move_from_engines(fen, move_time):
         best = max(candidates.items(), key=lambda x: x[1])[0]
         print(f"Голосование: {best} (голосов: {candidates[best]})")
         return best
-    # Emergency fallback
     try:
         resp = requests.post(f"{EMERGENCY_ENGINE}/get_move", json={"fen": fen, "move_time": min(move_time, 0.5)}, timeout=1.0)
         if resp.status_code == 200:
@@ -123,7 +100,6 @@ def make_move_with_retry(game_id, board, move_time):
                 print(f"[{game_id}] Нет хода, попытка {attempt+1}")
                 time.sleep(0.2)
                 continue
-            # Проверка легальности
             move = chess.Move.from_uci(move_uci)
             if move not in board.legal_moves:
                 print(f"[{game_id}] Нелегальный ход {move_uci}")
@@ -146,6 +122,8 @@ def play_game(game_id, initial_fen):
         board = chess.Board(initial_fen) if initial_fen else chess.Board()
         my_id = client.account.get()['id']
         white_id = black_id = None
+        # Для отслеживания количества сделанных ходов
+        last_move_count = 0
         while True:
             try:
                 stream = client.bots.stream_game_state(game_id)
@@ -157,16 +135,20 @@ def play_game(game_id, initial_fen):
                         black_id = event.get('black', {}).get('id')
                         opponent = black_id if white_id == my_id else white_id
                         send_greeting(game_id, opponent)
-                        moves = event.get('state', {}).get('moves', '')
-                        if moves:
-                            for m in moves.split():
-                                board.push_uci(m)
+                        moves_str = event.get('state', {}).get('moves', '')
+                        if moves_str:
+                            moves = moves_str.split()
+                            # Применяем только новые ходы
+                            for i in range(last_move_count, len(moves)):
+                                board.push_uci(moves[i])
+                            last_move_count = len(moves)
                     elif event['type'] == 'gameState':
-                        moves = event.get('moves', '')
-                        if moves:
-                            cur = moves.split()
-                            while len(cur) > len(board.move_stack):
-                                board.push_uci(cur[len(board.move_stack)])
+                        moves_str = event.get('moves', '')
+                        if moves_str:
+                            moves = moves_str.split()
+                            for i in range(last_move_count, len(moves)):
+                                board.push_uci(moves[i])
+                            last_move_count = len(moves)
                         if white_id is None:
                             white_id = event.get('white', {}).get('id')
                         if black_id is None:
