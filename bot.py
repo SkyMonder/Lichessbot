@@ -19,61 +19,10 @@ app = FastAPI()
 running = True
 active_games = set()
 games_lock = threading.Lock()
-engine_stats = {url: {"failures": 0, "avg_time": 0.5} for url in ENGINE_URLS}
-emergency_active = False
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
-def check_emergency():
-    global emergency_active
-    try:
-        resp = requests.get(f"{EMERGENCY_ENGINE}/health", timeout=1)
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("emergency_mode") or data.get("memory_percent", 0) > 85:
-                emergency_active = True
-                return True
-    except:
-        pass
-    emergency_active = False
-    return False
-
-def get_best_move(fen, move_time):
-    global emergency_active
-    need_emergency = check_emergency()
-    candidates = {}
-    if need_emergency or emergency_active:
-        try:
-            resp = requests.post(f"{EMERGENCY_ENGINE}/get_move", json={"fen": fen, "move_time": min(move_time, 0.5)}, timeout=1.0)
-            if resp.status_code == 200 and (move := resp.json().get("move")):
-                return move
-        except Exception as e:
-            print(f"Emergency недоступен: {e}")
-    for url in ENGINE_URLS:
-        try:
-            start = time.time()
-            resp = requests.post(f"{url}/get_move", json={"fen": fen, "move_time": move_time}, timeout=move_time + 0.5)
-            elapsed = time.time() - start
-            if resp.status_code == 200 and (move := resp.json().get("move")):
-                candidates[move] = candidates.get(move, 0) + 1
-                engine_stats[url]["avg_time"] = engine_stats[url]["avg_time"] * 0.9 + elapsed * 0.1
-                engine_stats[url]["failures"] = max(0, engine_stats[url]["failures"] - 1)
-            else:
-                engine_stats[url]["failures"] += 1
-        except Exception as e:
-            print(f"Ошибка {url}: {e}")
-            engine_stats[url]["failures"] += 1
-    if candidates:
-        return max(candidates.items(), key=lambda x: x[1])[0]
-    try:
-        resp = requests.post(f"{EMERGENCY_ENGINE}/get_move", json={"fen": fen, "move_time": 0.5}, timeout=1.0)
-        if resp.status_code == 200 and (move := resp.json().get("move")):
-            return move
-    except Exception as e:
-        print(f"Emergency недоступен: {e}")
-    return None
 
 def send_greeting(game_id, opponent):
     msg = random.choice([f"Привет, {opponent}! 🤝", f"Да победит сильнейший, {opponent}! 🧠"])
@@ -95,28 +44,97 @@ def send_game_result(game_id, board, my_id):
         pass
 
 def get_move_time(clock, board=None):
-    inc = clock.get('increment', 0)
+    """
+    Умное распределение времени на ход.
+    clock: {'white': 60.0, 'black': 60.0, 'increment': 3}
+    """
     my_time = clock.get('white' if board and board.turn == chess.WHITE else 'black', 0)
+    inc = clock.get('increment', 0)
+    moves_made = len(board.move_stack) if board else 0
+    
+    # Если времени почти нет, ходим мгновенно
     if my_time < 1.0:
         return 0.05
+    
+    # В пуле (инкремент 0-1) нужно очень быстро
     if inc <= 1:
-        return 0.2 if my_time < 3.0 else 0.4
+        if my_time < 5.0:
+            return 0.2
+        # В начале партии можно подумать чуть дольше
+        if moves_made < 10:
+            return 0.5
+        return 0.3
+    
+    # В блице (инкремент 2-3)
     elif inc <= 3:
-        return 0.5 if my_time < 5.0 else 1.0
+        if my_time < 10.0:
+            return 0.5
+        # В середине партии выделяем больше времени
+        if moves_made < 20:
+            return 1.0
+        # В эндшпиле можно быстрее
+        if moves_made > 40:
+            return 0.8
+        return 1.2
+    
+    # В рапиде/классике
     else:
-        return 1.0 if my_time < 10.0 else 3.0
+        if my_time < 20.0:
+            return 1.0
+        # В начале выделяем 3-4 секунды на важные ходы
+        if moves_made < 15:
+            return 3.0
+        if moves_made < 40:
+            return 2.5
+        return 2.0
 
-def make_move(game_id, board, move_time):
-    for attempt in range(2):
+def get_best_move_from_engines(fen, move_time):
+    candidates = {}
+    timeout = move_time + 2.0
+    for url in ENGINE_URLS:
         try:
-            if (move_uci := get_best_move(board.fen(), move_time)):
-                client.bots.make_move(game_id, move_uci)
-                print(f"[{game_id}] >>> {move_uci} ({move_time:.3f}s)")
-                sys.stdout.flush()
-                return True
+            resp = requests.post(f"{url}/get_move", json={"fen": fen, "move_time": move_time}, timeout=timeout)
+            if resp.status_code == 200:
+                move = resp.json().get("move")
+                if move:
+                    candidates[move] = candidates.get(move, 0) + 1
         except Exception as e:
-            print(f"[{game_id}] Попытка {attempt+1} не удалась: {e}")
-            time.sleep(0.1)
+            print(f"Ошибка {url}: {e}")
+    if candidates:
+        best = max(candidates.items(), key=lambda x: x[1])[0]
+        print(f"Голосование: {best} (голосов: {candidates[best]})")
+        return best
+    # Emergency fallback
+    try:
+        resp = requests.post(f"{EMERGENCY_ENGINE}/get_move", json={"fen": fen, "move_time": min(move_time, 0.5)}, timeout=1.0)
+        if resp.status_code == 200:
+            move = resp.json().get("move")
+            if move:
+                return move
+    except:
+        pass
+    return None
+
+def make_move_with_retry(game_id, board, move_time):
+    for attempt in range(3):
+        try:
+            move_uci = get_best_move_from_engines(board.fen(), move_time)
+            if not move_uci:
+                print(f"[{game_id}] Нет хода, попытка {attempt+1}")
+                time.sleep(0.2)
+                continue
+            # Проверка легальности
+            move = chess.Move.from_uci(move_uci)
+            if move not in board.legal_moves:
+                print(f"[{game_id}] Нелегальный ход {move_uci}")
+                return False
+            client.bots.make_move(game_id, move_uci)
+            print(f"[{game_id}] >>> {move_uci} ({move_time:.2f}s)")
+            sys.stdout.flush()
+            return True
+        except Exception as e:
+            print(f"[{game_id}] Ошибка: {e}")
+            time.sleep(0.2)
     return False
 
 def play_game(game_id, initial_fen):
@@ -137,22 +155,34 @@ def play_game(game_id, initial_fen):
                     if event['type'] == 'gameFull':
                         white_id = event.get('white', {}).get('id')
                         black_id = event.get('black', {}).get('id')
-                        send_greeting(game_id, black_id if white_id == my_id else white_id)
-                        for m in event.get('state', {}).get('moves', '').split():
-                            board.push_uci(m)
+                        opponent = black_id if white_id == my_id else white_id
+                        send_greeting(game_id, opponent)
+                        moves = event.get('state', {}).get('moves', '')
+                        if moves:
+                            for m in moves.split():
+                                board.push_uci(m)
                     elif event['type'] == 'gameState':
-                        moves = event.get('moves', '').split()
-                        while len(moves) > len(board.move_stack):
-                            board.push_uci(moves[len(board.move_stack)])
-                        white_id = white_id or event.get('white', {}).get('id')
-                        black_id = black_id or event.get('black', {}).get('id')
+                        moves = event.get('moves', '')
+                        if moves:
+                            cur = moves.split()
+                            while len(cur) > len(board.move_stack):
+                                board.push_uci(cur[len(board.move_stack)])
+                        if white_id is None:
+                            white_id = event.get('white', {}).get('id')
+                        if black_id is None:
+                            black_id = event.get('black', {}).get('id')
+                    else:
+                        continue
                     if event.get('status') and event.get('status') != 'started':
                         send_game_result(game_id, board, my_id)
                         return
                     if white_id is None or black_id is None:
                         continue
                     if (board.turn == chess.WHITE and white_id == my_id) or (board.turn == chess.BLACK and black_id == my_id):
-                        make_move(game_id, board, move_time)
+                        success = make_move_with_retry(game_id, board, move_time)
+                        if not success:
+                            print(f"[{game_id}] Не удалось сделать ход, ждём...")
+                            time.sleep(0.5)
             except (berserk.exceptions.ApiError, requests.exceptions.ConnectionError) as e:
                 print(f"[{game_id}] Ошибка соединения: {e}. Переподключение...")
                 time.sleep(5)
