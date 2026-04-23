@@ -1,6 +1,7 @@
 import os, sys, threading, time, random, traceback
 import chess, berserk, requests
 from fastapi import FastAPI, HTTPException
+from collections import Counter
 
 TOKEN = os.environ.get("LICHESS_TOKEN")
 ENGINE_URLS = [
@@ -8,7 +9,6 @@ ENGINE_URLS = [
     "https://brasche.onrender.com",
     "https://cloche.onrender.com",
 ]
-EMERGENCY_ENGINE = "https://emech.onrender.com"
 
 if not TOKEN:
     raise RuntimeError("LICHESS_TOKEN environment variable not set")
@@ -19,6 +19,7 @@ app = FastAPI()
 running = True
 active_games = set()
 games_lock = threading.Lock()
+MAX_CONCURRENT_GAMES = 3
 
 @app.get("/health")
 def health():
@@ -49,20 +50,15 @@ def get_move_time(clock, board=None):
     if my_time < 1.0:
         return 0.05
     if inc <= 1:
-        if my_time < 3.0:
-            return 0.2
-        return 0.4
+        return 0.2 if my_time < 5.0 else 0.4
     elif inc <= 3:
-        if my_time < 5.0:
-            return 0.5
-        return 1.0
+        return 0.5 if my_time < 10.0 else 1.0
     else:
-        if my_time < 10.0:
-            return 1.0
-        return 2.0
+        return 1.0 if my_time < 20.0 else 2.0
 
-def get_best_move_from_engines(fen, move_time):
-    candidates = {}
+def get_best_move(fen, move_time):
+    """Опрашивает три движка, возвращает ход с большинством голосов или None"""
+    candidates = []
     timeout = move_time + 2.0
     for url in ENGINE_URLS:
         try:
@@ -70,93 +66,93 @@ def get_best_move_from_engines(fen, move_time):
             if resp.status_code == 200:
                 move = resp.json().get("move")
                 if move:
-                    candidates[move] = candidates.get(move, 0) + 1
+                    candidates.append(move)
         except Exception as e:
             print(f"Ошибка {url}: {e}")
     if candidates:
-        best = max(candidates.items(), key=lambda x: x[1])[0]
-        print(f"Голосование: {best} (голосов: {candidates[best]})")
-        return best
-    # Fallback на emergency
-    try:
-        resp = requests.post(f"{EMERGENCY_ENGINE}/get_move", json={"fen": fen, "move_time": min(move_time, 0.5)}, timeout=1.0)
-        if resp.status_code == 200:
-            move = resp.json().get("move")
-            if move:
-                return move
-    except:
-        pass
+        most_common = Counter(candidates).most_common(1)[0][0]
+        print(f"Голосование: {most_common} (из {len(candidates)} ответов)")
+        return most_common
     return None
 
-def make_move_with_retry(game_id, board, move_time):
-    for attempt in range(3):
-        try:
-            move_uci = get_best_move_from_engines(board.fen(), move_time)
-            if not move_uci:
-                print(f"[{game_id}] Нет хода, попытка {attempt+1}")
-                time.sleep(0.3)
-                continue
-            move = chess.Move.from_uci(move_uci)
-            if move not in board.legal_moves:
-                print(f"[{game_id}] Нелегальный ход {move_uci}")
-                return False
-            client.bots.make_move(game_id, move_uci)
-            print(f"[{game_id}] >>> {move_uci} ({move_time:.2f}s)")
-            sys.stdout.flush()
-            return True
-        except Exception as e:
-            print(f"[{game_id}] Ошибка: {e}")
-            time.sleep(0.3)
-    return False
+def make_move(game_id, board, move_time):
+    move_uci = get_best_move(board.fen(), move_time)
+    if not move_uci:
+        return False
+    try:
+        move = chess.Move.from_uci(move_uci)
+        if move not in board.legal_moves:
+            print(f"Нелегальный ход {move_uci}")
+            return False
+        client.bots.make_move(game_id, move_uci)
+        print(f"[{game_id}] >>> {move_uci} ({move_time:.2f}s)")
+        sys.stdout.flush()
+        return True
+    except Exception as e:
+        print(f"Ошибка отправки хода: {e}")
+        return False
 
 def play_game(game_id, initial_fen):
     with games_lock:
-        if game_id in active_games:
+        if len(active_games) >= MAX_CONCURRENT_GAMES or game_id in active_games:
+            print(f"[{game_id}] Отклонено: слишком много игр или уже активна")
             return
         active_games.add(game_id)
     try:
+        # Инициализация доски
         board = chess.Board(initial_fen) if initial_fen else chess.Board()
         my_id = client.account.get()['id']
         white_id = black_id = None
-        last_moves = ""  # для отслеживания изменений
+        print(f"[{game_id}] Начало игры. Мой ID: {my_id}")
         while True:
             try:
                 stream = client.bots.stream_game_state(game_id)
                 for event in stream:
                     if 'clock' in event:
                         move_time = get_move_time(event['clock'], board)
+                    # Обновление доски
                     if event['type'] == 'gameFull':
                         white_id = event.get('white', {}).get('id')
                         black_id = event.get('black', {}).get('id')
+                        # Применяем ходы, если есть
+                        moves = event.get('state', {}).get('moves', '')
+                        if moves:
+                            for m in moves.split():
+                                board.push_uci(m)
+                        print(f"[{game_id}] gameFull: white={white_id}, black={black_id}, turn={board.turn}")
+                        # Приветствие
                         opponent = black_id if white_id == my_id else white_id
                         send_greeting(game_id, opponent)
-                        moves = event.get('state', {}).get('moves', '')
-                        if moves != last_moves:
-                            last_moves = moves
-                            board = chess.Board(moves) if moves else chess.Board(initial_fen)
                     elif event['type'] == 'gameState':
                         moves = event.get('moves', '')
-                        if moves != last_moves:
-                            last_moves = moves
-                            board = chess.Board(moves) if moves else chess.Board(initial_fen)
+                        if moves:
+                            cur = moves.split()
+                            # Добавляем только новые ходы
+                            while len(cur) > len(board.move_stack):
+                                board.push_uci(cur[len(board.move_stack)])
                         if white_id is None:
                             white_id = event.get('white', {}).get('id')
                         if black_id is None:
                             black_id = event.get('black', {}).get('id')
                     else:
                         continue
+
+                    # Проверка окончания игры
                     if event.get('status') and event.get('status') != 'started':
+                        print(f"[{game_id}] Завершена: {event.get('status')}")
                         send_game_result(game_id, board, my_id)
                         return
+
+                    # Ход бота
                     if white_id is None or black_id is None:
                         continue
                     if (board.turn == chess.WHITE and white_id == my_id) or (board.turn == chess.BLACK and black_id == my_id):
-                        success = make_move_with_retry(game_id, board, move_time)
+                        success = make_move(game_id, board, move_time)
                         if not success:
-                            print(f"[{game_id}] Не удалось сделать ход, ждём...")
-                            time.sleep(0.5)
+                            print(f"[{game_id}] Не удалось сделать ход")
+                            # Не выходим, пробуем позже
             except (berserk.exceptions.ApiError, requests.exceptions.ConnectionError) as e:
-                print(f"[{game_id}] Ошибка соединения: {e}. Переподключение через 5 сек...")
+                print(f"[{game_id}] Ошибка соединения: {e}. Переподключение...")
                 time.sleep(5)
                 continue
             except Exception as e:
@@ -165,6 +161,7 @@ def play_game(game_id, initial_fen):
                 break
     except Exception as e:
         print(f"[{game_id}] Внешняя ошибка: {e}")
+        traceback.print_exc()
     finally:
         with games_lock:
             active_games.discard(game_id)
@@ -187,15 +184,20 @@ def run_bot():
                     ch = event['challenge']
                     if ch['challenger']['id'] == my_id:
                         continue
+                    if len(active_games) >= MAX_CONCURRENT_GAMES:
+                        print(f"Отклоняем вызов от {ch['challenger']['id']}: слишком много игр")
+                        continue
                     print(f"Вызов от {ch['challenger']['id']} принят")
                     client.bots.accept_challenge(ch['id'])
                     threading.Thread(target=play_game, args=(ch['id'], ch.get('initialFen')), daemon=True).start()
                 elif event['type'] == 'gameStart':
                     game = event['game']
-                    print(f"Игра {game['id']} началась")
+                    if game['id'] in active_games:
+                        continue
+                    print(f"Игра {game['id']} началась (после нашего вызова)")
                     threading.Thread(target=play_game, args=(game['id'], game.get('initialFen')), daemon=True).start()
         except Exception as e:
-            print(f"Ошибка: {e}. Пауза 30 сек.")
+            print(f"Ошибка в главном цикле: {e}. Пауза 30 сек.")
             time.sleep(30)
 
 threading.Thread(target=run_bot, daemon=True).start()
