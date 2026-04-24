@@ -3,16 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SkyBotinok – Вызов бота + Режим издевательства</title>
+    <title>SkyBotinok – Управление ботом</title>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             max-width: 700px;
-            margin: 30px auto;
+            margin: 50px auto;
             padding: 20px;
             background: #1e1e2f;
             color: #eee;
-            border-radius: 20px;
+            border-radius: 16px;
             box-shadow: 0 0 20px rgba(0,0,0,0.5);
         }
         h1, h2 {
@@ -73,16 +73,18 @@
             font-size: 12px;
             color: #888;
         }
+        .field-group {
+            margin-top: 10px;
+        }
     </style>
 </head>
 <body>
-    <h1>🤖 SkyBotinok – Управление</h1>
+    <h1>🤖 SkyBotinok – Твой мощный бот</h1>
 
-    <!-- Обычный вызов -->
-    <h2>📢 Обычный вызов</h2>
+    <h2>📨 Обычный вызов</h2>
     <form id="challengeForm">
         <label>👤 Ник соперника:</label>
-        <input type="text" id="username" placeholder="например: Stockfish" required>
+        <input type="text" id="username" placeholder="например: Stockfish, skymonder" required>
 
         <label>⏱️ Контроль времени:</label>
         <select id="timeControl">
@@ -90,10 +92,11 @@
             <option value="2+1">2+1 (пуля)</option>
             <option value="3+0">3+0 (блиц)</option>
             <option value="3+2">3+2 (блиц)</option>
-            <option value="5+0" selected>5+0 (блиц)</option>
-            <option value="5+3">5+3 (блиц)</option>
+            <option value="5+0">5+0 (блиц)</option>
+            <option value="5+3" selected>5+3 (блиц)</option>
             <option value="10+0">10+0 (рапид)</option>
             <option value="10+5">10+5 (рапид)</option>
+            <option value="15+10">15+10 (рапид)</option>
         </select>
 
         <label>🎨 Цвет:</label>
@@ -111,13 +114,12 @@
 
         <button type="submit">🚀 Отправить вызов</button>
     </form>
-    <div id="status" class="status"></div>
+    <div id="challengeStatus" class="status"></div>
 
     <hr>
 
-    <!-- Режим издевательства -->
     <h2>🔥 РЕЖИМ ИЗДЕВАТЕЛЬСТВА 🔥</h2>
-    <p style="font-size: 14px;">Бот будет автоматически кидать вызовы указанному сопернику до окончания лимита.</p>
+    <p style="font-size: 14px;">Бот будет автоматически кидать вызовы указанному сопернику до наступления лимита (после окончания каждой партии).</p>
     <form id="bullyForm">
         <label>👤 Ник жертвы:</label>
         <input type="text" id="bullyUsername" placeholder="ник на Lichess" required>
@@ -141,16 +143,16 @@
 
         <label>🛑 Лимит:</label>
         <select id="bullyLimitType">
-            <option value="time">По времени (МСК)</option>
             <option value="games">По количеству партий</option>
+            <option value="time">По времени (МСК)</option>
             <option value="infinite">Бесконечно (пока не отключу вручную)</option>
         </select>
 
-        <div id="limitTimeField">
+        <div id="limitTimeField" style="display: none;">
             <label>🕒 Окончание (МСК, формат HH:MM):</label>
             <input type="text" id="bullyEndTime" placeholder="например 23:59">
         </div>
-        <div id="limitGamesField" style="display: none;">
+        <div id="limitGamesField" style="display: block;">
             <label>🎯 Количество партий:</label>
             <input type="number" id="bullyGamesCount" value="5" min="1">
         </div>
@@ -161,7 +163,7 @@
 
     <footer>
         ⚡ Бот сам принимает и играет все вызовы.<br>
-        Режим издевательства: после окончания каждой партии бот отправляет новый вызов жертве.
+        В режиме издевательства партии будут отправляться последовательно.
     </footer>
 
     <script>
@@ -169,13 +171,11 @@
         const limitTypeSelect = document.getElementById('bullyLimitType');
         const limitTimeDiv = document.getElementById('limitTimeField');
         const limitGamesDiv = document.getElementById('limitGamesField');
-
-        limitTypeSelect.addEventListener('change', () => {
-            const val = limitTypeSelect.value;
-            if (val === 'time') {
+        limitTypeSelect.addEventListener('change', function() {
+            if (this.value === 'time') {
                 limitTimeDiv.style.display = 'block';
                 limitGamesDiv.style.display = 'none';
-            } else if (val === 'games') {
+            } else if (this.value === 'games') {
                 limitTimeDiv.style.display = 'none';
                 limitGamesDiv.style.display = 'block';
             } else {
@@ -189,32 +189,26 @@
             e.preventDefault();
             const username = document.getElementById('username').value.trim();
             if (!username) {
-                showStatus('Введите ник соперника!', 'error', 'status');
+                showStatus('challengeStatus', 'Введите ник соперника!', 'error');
                 return;
             }
             const timeControl = document.getElementById('timeControl').value;
             const [clockLimit, clockIncrement] = timeControl.split('+');
             const color = document.getElementById('color').value;
             const rated = document.getElementById('rated').value === 'true';
-
-            const params = new URLSearchParams({
-                clock_limit: clockLimit,
-                clock_increment: clockIncrement,
-                color: color,
-                rated: rated
-            });
-            const url = `/challenge/${username}?${params.toString()}`;
-            showStatus('Отправка вызова...', '', 'status');
+            const params = new URLSearchParams({ clock_limit: clockLimit, clock_increment: clockIncrement, color: color, rated: rated });
+            const url = `/challenge/${encodeURIComponent(username)}?${params.toString()}`;
+            showStatus('challengeStatus', 'Отправка...', '');
             try {
                 const response = await fetch(url);
                 const data = await response.json();
                 if (response.ok) {
-                    showStatus(`✅ Вызов отправлен ${username} (${timeControl}, ${color})`, 'success', 'status');
+                    showStatus('challengeStatus', `✅ Вызов отправлен ${username} (${timeControl}, ${color}, ${rated ? 'рейтинговая' : 'нерейтинговая'})`, 'success');
                 } else {
-                    showStatus(`❌ Ошибка: ${data.detail || 'Неизвестная ошибка'}`, 'error', 'status');
+                    showStatus('challengeStatus', `❌ Ошибка: ${data.detail || 'Неизвестная ошибка'}`, 'error');
                 }
             } catch (err) {
-                showStatus(`❌ Ошибка сети: ${err.message}`, 'error', 'status');
+                showStatus('challengeStatus', `❌ Ошибка сети: ${err.message}`, 'error');
             }
         });
 
@@ -223,7 +217,7 @@
             e.preventDefault();
             const username = document.getElementById('bullyUsername').value.trim();
             if (!username) {
-                showStatus('Введите ник жертвы!', 'error', 'bullyStatus');
+                showStatus('bullyStatus', 'Введите ник жертвы!', 'error');
                 return;
             }
             const timeControl = document.getElementById('bullyTimeControl').value;
@@ -234,18 +228,17 @@
             let gamesCount = null;
             if (limitType === 'time') {
                 endTime = document.getElementById('bullyEndTime').value.trim();
-                if (!endTime) {
-                    showStatus('Укажите время окончания (МСК)', 'error', 'bullyStatus');
+                if (!endTime || !/^\d{1,2}:\d{2}$/.test(endTime)) {
+                    showStatus('bullyStatus', '❌ Укажите корректное время окончания (ЧЧ:ММ)', 'error');
                     return;
                 }
             } else if (limitType === 'games') {
-                gamesCount = parseInt(document.getElementById('bullyGamesCount').value);
+                gamesCount = parseInt(document.getElementById('bullyGamesCount').value, 10);
                 if (isNaN(gamesCount) || gamesCount < 1) {
-                    showStatus('Количество партий должно быть ≥1', 'error', 'bullyStatus');
+                    showStatus('bullyStatus', '❌ Укажите положительное количество партий', 'error');
                     return;
                 }
             }
-
             const payload = {
                 username: username,
                 clock_limit: parseInt(clockLimit),
@@ -256,8 +249,7 @@
                 end_time: endTime,
                 games_count: gamesCount
             };
-
-            showStatus('Запускаем издевательство...', '', 'bullyStatus');
+            showStatus('bullyStatus', 'Запуск издевательства...', '');
             try {
                 const response = await fetch('/start_bully', {
                     method: 'POST',
@@ -266,16 +258,16 @@
                 });
                 const data = await response.json();
                 if (response.ok) {
-                    showStatus(`✅ Издевательство над ${username} начато!`, 'success', 'bullyStatus');
+                    showStatus('bullyStatus', `✅ ${data.message}`, 'success');
                 } else {
-                    showStatus(`❌ Ошибка: ${data.detail || 'Неизвестная ошибка'}`, 'error', 'bullyStatus');
+                    showStatus('bullyStatus', `❌ Ошибка: ${data.detail || 'Неизвестная ошибка'}`, 'error');
                 }
             } catch (err) {
-                showStatus(`❌ Ошибка сети: ${err.message}`, 'error', 'bullyStatus');
+                showStatus('bullyStatus', `❌ Ошибка сети: ${err.message}`, 'error');
             }
         });
 
-        function showStatus(msg, type, elementId) {
+        function showStatus(elementId, msg, type) {
             const div = document.getElementById(elementId);
             div.textContent = msg;
             div.className = `status ${type}`;
