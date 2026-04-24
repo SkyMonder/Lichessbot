@@ -23,17 +23,8 @@ active_games = set()
 games_lock = threading.Lock()
 MAX_CONCURRENT_GAMES = 3
 
-# Структура для издевательств:
+# Структура для издевательств
 # key = target_username (ник жертвы)
-# value = {
-#   'clock_limit': int,
-#   'clock_increment': int,
-#   'color': str,
-#   'rated': bool,
-#   'games_left': int (или None для бесконечности),
-#   'end_datetime': datetime (или None),
-#   'current_game_id': str or None,   # текущая активная партия с этой жертвой
-# }
 bully_data = {}
 bully_lock = threading.Lock()
 
@@ -109,7 +100,7 @@ def start_bully_route(data: dict):
         games_left = -1  # бесконечно
 
     with bully_lock:
-        # Если уже есть активное издевательство над этим пользователем, перезаписываем
+        # Если уже есть активное издевательство, перезаписываем
         bully_data[username] = {
             'clock_limit': clock_limit,
             'clock_increment': clock_increment,
@@ -132,7 +123,6 @@ def start_bully_route(data: dict):
         )
         return {"status": "ok", "message": f"Bullying of {username} started! First challenge sent."}
     except Exception as e:
-        # Если первый вызов не удался, удаляем запись об издевательстве
         with bully_lock:
             bully_data.pop(username, None)
         raise HTTPException(500, detail=str(e))
@@ -222,7 +212,6 @@ def make_move(game_id, board, move_time):
         return False
 
 def play_game(game_id, initial_fen, bully_target=None):
-    # bully_target – ник жертвы, если эта игра была инициирована издевательством
     with games_lock:
         active_games.add(game_id)
     try:
@@ -265,12 +254,12 @@ def play_game(game_id, initial_fen, bully_target=None):
                     if event.get('status') and event.get('status') != 'started':
                         print(f"[{game_id}] Завершена: {event.get('status')}")
                         send_game_result(game_id, board, my_id)
-                        # --- РЕЖИМ ИЗДЕВАТЕЛЬСТВА: если эта игра была начата по издевательству, то после завершения запускаем следующий вызов ---
+                        # Режим издевательства: если игра была начата для bully_target
                         if bully_target:
                             with bully_lock:
                                 if bully_target in bully_data:
                                     info = bully_data[bully_target]
-                                    # Сбрасываем current_game_id
+                                    # Очищаем текущую игру
                                     info['current_game_id'] = None
                                     # Проверяем лимиты
                                     now = datetime.now()
@@ -294,11 +283,11 @@ def play_game(game_id, initial_fen, bully_target=None):
                                                     color=info['color'],
                                                     variant="standard"
                                                 )
-                                                print(f"[БУЛЛИНГ] Отправлен новый вызов {bully_target}, осталось вызовов: {info['games_left'] if info['games_left'] != -1 else 'бесконечно'}")
+                                                print(f"[БУЛЛИНГ] Отправлен новый вызов {bully_target}, осталось: {info['games_left'] if info['games_left'] != -1 else '∞'}")
                                             except Exception as e:
                                                 print(f"[БУЛЛИНГ] Ошибка при отправке вызова: {e}")
                                     else:
-                                        # Бесконечно: отправляем следующий вызов
+                                        # Бесконечно
                                         try:
                                             client.challenges.create(
                                                 username=bully_target,
@@ -333,15 +322,15 @@ def play_game(game_id, initial_fen, bully_target=None):
     finally:
         with games_lock:
             active_games.discard(game_id)
-            # Если игра была издевательской и current_game_id не очищен, очищаем на всякий случай
-            if bully_target:
-                with bully_lock:
-                    if bully_target in bully_data:
-                        bully_data[bully_target]['current_game_id'] = None
+        if bully_target:
+            with bully_lock:
+                if bully_target in bully_data:
+                    bully_data[bully_target]['current_game_id'] = None
 
 def run_bot():
     print("Главный бот запущен. Ожидание вызовов...")
     my_id = client.account.get()['id']
+    my_username = client.account.get()['username']
     while running:
         try:
             for event in client.bots.stream_incoming_events():
@@ -359,12 +348,17 @@ def run_bot():
                 elif event['type'] == 'gameStart':
                     game = event['game']
                     game_id = game['id']
-                    # Проверяем, не является ли эта игра инициированной издевательством
-                    # Чтобы узнать, для кого она, нужно посмотреть white/black. Пока не знаем, пропустим.
-                    # Более корректно: при старте издевательства мы создаём запись с текущей игрой, тогда здесь можно её не обрабатывать.
-                    # Просто запустим игру без bully_target, она обработается нормально.
+                    players = game.get('players', {})
+                    white = players.get('white', {}).get('user', {}).get('name')
+                    black = players.get('black', {}).get('user', {}).get('name')
+                    opponent = black if white == my_username else white
+                    if opponent:
+                        with bully_lock:
+                            if opponent in bully_data and bully_data[opponent]['current_game_id'] is None:
+                                bully_data[opponent]['current_game_id'] = game_id
+                                threading.Thread(target=play_game, args=(game_id, game.get('initialFen'), opponent), daemon=True).start()
+                                continue
                     if game_id not in active_games:
-                        print(f"Игра {game_id} началась (после нашего вызова)")
                         threading.Thread(target=play_game, args=(game_id, game.get('initialFen'), None), daemon=True).start()
         except Exception as e:
             print(f"Ошибка в главном цикле: {e}. Пауза 30 сек.")
