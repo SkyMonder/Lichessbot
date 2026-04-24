@@ -105,6 +105,7 @@ def start_bully_route(data: dict):
             'games_left': games_left,
             'end_datetime': end_datetime,
         }
+        print(f"[БУЛЛИНГ] Добавлена жертва {username}, лимит: {games_left if games_left != -1 else 'бесконечно'}, время окончания: {end_datetime}")
 
     try:
         client.challenges.create(
@@ -210,10 +211,10 @@ def play_game(game_id, initial_fen):
         active_games.add(game_id)
     try:
         board = chess.Board(initial_fen) if initial_fen else chess.Board()
-        my_id = client.account.get()['id']
-        white_id = black_id = None
-        opponent = None
-        print(f"[{game_id}] Старт. Мой ID: {my_id}")
+        my_username = client.account.get()['username']
+        print(f"[{game_id}] Мой ник: {my_username}")
+        white_name = black_name = None
+        opponent_name = None
         while True:
             try:
                 stream = client.bots.stream_game_state(game_id)
@@ -221,79 +222,84 @@ def play_game(game_id, initial_fen):
                     if 'clock' in event:
                         move_time = get_move_time(event['clock'], board)
                     if event['type'] == 'gameFull':
-                        white_id = event.get('white', {}).get('id')
-                        black_id = event.get('black', {}).get('id')
+                        white_name = event.get('white', {}).get('name')
+                        black_name = event.get('black', {}).get('name')
                         moves_str = event.get('state', {}).get('moves', '')
                         if moves_str:
                             moves = moves_str.split()
                             while len(moves) > len(board.move_stack):
                                 board.push_uci(moves[len(board.move_stack)])
-                        print(f"[{game_id}] gameFull: white={white_id} black={black_id} turn={board.turn} moves={len(board.move_stack)}")
-                        opponent = black_id if white_id == my_id else white_id
-                        send_greeting(game_id, opponent)
+                        print(f"[{game_id}] gameFull: white={white_name} black={black_name} turn={board.turn} moves={len(board.move_stack)}")
+                        opponent_name = black_name if white_name == my_username else white_name
+                        if opponent_name:
+                            send_greeting(game_id, opponent_name)
                     elif event['type'] == 'gameState':
                         moves_str = event.get('moves', '')
                         if moves_str:
                             moves = moves_str.split()
                             while len(moves) > len(board.move_stack):
                                 board.push_uci(moves[len(board.move_stack)])
-                        if white_id is None:
-                            white_id = event.get('white', {}).get('id')
-                        if black_id is None:
-                            black_id = event.get('black', {}).get('id')
-                        if opponent is None:
-                            opponent = black_id if white_id == my_id else white_id
+                        if white_name is None:
+                            white_name = event.get('white', {}).get('name')
+                        if black_name is None:
+                            black_name = event.get('black', {}).get('name')
+                        if opponent_name is None:
+                            opponent_name = black_name if white_name == my_username else white_name
                     else:
                         continue
                     if event.get('status') and event.get('status') != 'started':
                         print(f"[{game_id}] Завершена: {event.get('status')}")
-                        send_game_result(game_id, board, my_id)
-                        # --- БУЛЛИНГ: отправляем следующий вызов, если цель активна ---
-                        if opponent:
+                        send_game_result(game_id, board, my_username)
+                        # --- БУЛЛИНГ: отправляем следующий вызов ---
+                        if opponent_name:
+                            print(f"[БУЛЛИНГ] Игра с {opponent_name} завершена, проверяем активность...")
                             with bully_lock:
-                                if opponent in bully_data:
-                                    info = bully_data[opponent]
+                                if opponent_name in bully_data:
+                                    info = bully_data[opponent_name]
                                     now = datetime.now()
                                     if info['end_datetime'] and now > info['end_datetime']:
-                                        del bully_data[opponent]
-                                        print(f"[БУЛЛИНГ] Время истекло для {opponent}")
+                                        del bully_data[opponent_name]
+                                        print(f"[БУЛЛИНГ] Время истекло для {opponent_name}")
                                     elif info['games_left'] is not None:
                                         if info['games_left'] <= 0:
-                                            del bully_data[opponent]
-                                            print(f"[БУЛЛИНГ] Лимит партий исчерпан для {opponent}")
+                                            del bully_data[opponent_name]
+                                            print(f"[БУЛЛИНГ] Лимит партий исчерпан для {opponent_name}")
                                         else:
                                             if info['games_left'] > 0:
                                                 info['games_left'] -= 1
-                                            # Отправляем следующий вызов
                                             try:
                                                 client.challenges.create(
-                                                    username=opponent,
+                                                    username=opponent_name,
                                                     rated=info['rated'],
                                                     clock_limit=info['clock_limit'] * 60,
                                                     clock_increment=info['clock_increment'],
                                                     color=info['color'],
                                                     variant="standard"
                                                 )
-                                                print(f"[БУЛЛИНГ] Новый вызов {opponent}, осталось: {info['games_left'] if info['games_left'] != -1 else '∞'}")
+                                                print(f"[БУЛЛИНГ] Новый вызов {opponent_name}, осталось: {info['games_left'] if info['games_left'] != -1 else '∞'}")
                                             except Exception as e:
                                                 print(f"[БУЛЛИНГ] Ошибка вызова: {e}")
                                     else:
                                         try:
                                             client.challenges.create(
-                                                username=opponent,
+                                                username=opponent_name,
                                                 rated=info['rated'],
                                                 clock_limit=info['clock_limit'] * 60,
                                                 clock_increment=info['clock_increment'],
                                                 color=info['color'],
                                                 variant="standard"
                                             )
-                                            print(f"[БУЛЛИНГ] Новый вызов {opponent} (бесконечно)")
+                                            print(f"[БУЛЛИНГ] Новый вызов {opponent_name} (бесконечно)")
                                         except Exception as e:
                                             print(f"[БУЛЛИНГ] Ошибка: {e}")
+                                else:
+                                    print(f"[БУЛЛИНГ] {opponent_name} не в списке активных издевательств")
+                        else:
+                            print(f"[БУЛЛИНГ] opponent_name не определён")
                         return
-                    if white_id is None or black_id is None:
+                    if white_name is None or black_name is None:
                         continue
-                    if (board.turn == chess.WHITE and white_id == my_id) or (board.turn == chess.BLACK and black_id == my_id):
+                    if (board.turn == chess.WHITE and white_name == my_username) or (board.turn == chess.BLACK and black_name == my_username):
                         success = make_move(game_id, board, move_time)
                         if not success:
                             print(f"[{game_id}] Ход не удался, ждём...")
@@ -315,15 +321,12 @@ def play_game(game_id, initial_fen):
 
 def run_bot():
     print("Главный бот запущен. Ожидание вызовов...")
-    my_id = client.account.get()['id']
     while running:
         try:
             for event in client.bots.stream_incoming_events():
                 if event['type'] == 'challenge':
                     ch = event['challenge']
                     challenger = ch['challenger']['id']
-                    if challenger == my_id:
-                        continue
                     if len(active_games) >= MAX_CONCURRENT_GAMES:
                         print(f"Отклонён вызов от {challenger}: много игр ({len(active_games)})")
                         continue
