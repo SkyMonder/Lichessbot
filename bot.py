@@ -1,6 +1,7 @@
 import os, sys, threading, time, random, traceback
 import chess, berserk, requests
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from collections import Counter
 
 TOKEN = os.environ.get("LICHESS_TOKEN")
@@ -21,9 +22,45 @@ active_games = set()
 games_lock = threading.Lock()
 MAX_CONCURRENT_GAMES = 3
 
+# Чтение HTML-файла (должен лежать в той же папке)
+HTML_PATH = os.path.join(os.path.dirname(__file__), "index.html")
+with open(HTML_PATH, "r", encoding="utf-8") as f:
+    HTML_CONTENT = f.read()
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    return HTML_CONTENT
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+@app.get("/challenge/{username}")
+def manual_challenge(
+    username: str,
+    clock_limit: int = 5,
+    clock_increment: int = 3,
+    color: str = "random",
+    rated: bool = True
+):
+    """Отправка вызова с возможностью настроить контроль и цвет"""
+    if not username:
+        raise HTTPException(status_code=400, detail="Username required")
+    # Проверка допустимых значений цвета
+    if color not in ["random", "white", "black"]:
+        raise HTTPException(status_code=400, detail="Color must be random, white or black")
+    try:
+        client.challenges.create(
+            username=username,
+            rated=rated,
+            clock_limit=clock_limit * 60,  # переводим минуты в секунды
+            clock_increment=clock_increment,
+            color=color,
+            variant="standard"
+        )
+        return {"status": "ok", "message": f"Challenge sent to {username} ({clock_limit}+{clock_increment}, {color})"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 def send_greeting(game_id, opponent):
     msg = random.choice([f"Привет, {opponent}! 🤝", f"Да победит сильнейший, {opponent}! 🧠"])
