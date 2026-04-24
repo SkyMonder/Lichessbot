@@ -23,9 +23,11 @@ active_games = set()
 games_lock = threading.Lock()
 MAX_CONCURRENT_GAMES = 3
 
+# Хранилище активных издевательств (ключ = ник жертвы)
 bully_data = {}
 bully_lock = threading.Lock()
 
+# Чтение HTML
 HTML_PATH = os.path.join(os.path.dirname(__file__), "index.html")
 try:
     with open(HTML_PATH, "r", encoding="utf-8") as f:
@@ -94,7 +96,7 @@ def start_bully_route(data: dict):
     elif limit_type == "games" and games_count:
         games_left = int(games_count)
     else:
-        games_left = -1
+        games_left = -1  # бесконечно
 
     with bully_lock:
         bully_data[username] = {
@@ -105,8 +107,8 @@ def start_bully_route(data: dict):
             'games_left': games_left,
             'end_datetime': end_datetime,
         }
-        print(f"[БУЛЛИНГ] Добавлена жертва {username}, лимит: {games_left if games_left != -1 else 'бесконечно'}, время окончания: {end_datetime}")
 
+    # Отправляем первый вызов
     try:
         client.challenges.create(
             username=username,
@@ -250,9 +252,8 @@ def play_game(game_id, initial_fen):
                     if event.get('status') and event.get('status') != 'started':
                         print(f"[{game_id}] Завершена: {event.get('status')}")
                         send_game_result(game_id, board, my_username)
-                        # --- БУЛЛИНГ: отправляем следующий вызов ---
+                        # === БУЛЛИНГ ===
                         if opponent_name:
-                            print(f"[БУЛЛИНГ] Игра с {opponent_name} завершена, проверяем активность...")
                             with bully_lock:
                                 if opponent_name in bully_data:
                                     info = bully_data[opponent_name]
@@ -292,10 +293,6 @@ def play_game(game_id, initial_fen):
                                             print(f"[БУЛЛИНГ] Новый вызов {opponent_name} (бесконечно)")
                                         except Exception as e:
                                             print(f"[БУЛЛИНГ] Ошибка: {e}")
-                                else:
-                                    print(f"[БУЛЛИНГ] {opponent_name} не в списке активных издевательств")
-                        else:
-                            print(f"[БУЛЛИНГ] opponent_name не определён")
                         return
                     if white_name is None or black_name is None:
                         continue
