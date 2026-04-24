@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SkyBotinok – Вызов бота</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #1e1e2f;
+            color: #eee;
+            border-radius: 16px;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+        h1 {
+            text-align: center;
+            color: #ffb347;
+        }
+        label {
+            display: block;
+            margin-top: 15px;
+            font-weight: bold;
+        }
+        input, select, button {
+            width: 100%;
+            padding: 10px;
+            margin-top: 5px;
+            border-radius: 8px;
+            border: none;
+            font-size: 16px;
+        }
+        input, select {
+            background: #2d2d44;
+            color: #fff;
+        }
+        button {
+            background: #ffb347;
+            color: #1e1e2f;
+            font-weight: bold;
+            cursor: pointer;
+            margin-top: 25px;
+            transition: 0.2s;
+        }
+        button:hover {
+            background: #ff9f1a;
+        }
+        .status {
+            margin-top: 20px;
+            padding: 12px;
+            border-radius: 8px;
+            background: #2d2d44;
+            text-align: center;
+            display: none;
+        }
+        .error {
+            background: #a33;
+            color: #ffe0e0;
+        }
+        .success {
+            background: #2a6b2a;
+            color: #d0ffd0;
+        }
+        footer {
+            text-align: center;
+            margin-top: 30px;
+            font-size: 12px;
+            color: #888;
+        }
+    </style>
+</head>
+<body>
+    <h1>🤖 SkyBotinok – Вызов бота</h1>
+    <form id="challengeForm">
+        <label>👤 Ник соперника (на Lichess):</label>
+        <input type="text" id="username" placeholder="например: Stockfish, skymonder" required>
+
+        <label>⏱️ Контроль времени:</label>
+        <select id="timeControl">
+            <option value="1+0">1+0 (пуля)</option>
+            <option value="2+1">2+1 (пуля)</option>
+            <option value="3+0">3+0 (блиц)</option>
+            <option value="3+2">3+2 (блиц)</option>
+            <option value="5+0">5+0 (блиц)</option>
+            <option value="5+3" selected>5+3 (блиц)</option>
+            <option value="10+0">10+0 (рапид)</option>
+            <option value="10+5">10+5 (рапид)</option>
+            <option value="15+10">15+10 (рапид)</option>
+        </select>
+
+        <label>🎨 Цвет:</label>
+        <select id="color">
+            <option value="random">Случайный</option>
+            <option value="white">Белые</option>
+            <option value="black">Чёрные</option>
+        </select>
+
+        <label>🏆 Рейтинговая игра:</label>
+        <select id="rated">
+            <option value="true">Да</option>
+            <option value="false">Нет</option>
+        </select>
+
+        <button type="submit">🚀 Отправить вызов</button>
+    </form>
+    <div id="status" class="status"></div>
+    <footer>
+        ⚡ Бот сам принимает и играет все вызовы.<br>
+        После отправки вызова, дождитесь его принятия соперником.
+    </footer>
+
+    <script>
+        document.getElementById('challengeForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const username = document.getElementById('username').value.trim();
+            if (!username) {
+                showStatus('Введите ник соперника!', 'error');
+                return;
+            }
+            const timeControl = document.getElementById('timeControl').value;
+            const [clockLimit, clockIncrement] = timeControl.split('+');
+            const color = document.getElementById('color').value;
+            const rated = document.getElementById('rated').value === 'true';
+
+            const params = new URLSearchParams({
+                clock_limit: clockLimit,
+                clock_increment: clockIncrement,
+                color: color,
+                rated: rated
+            });
+            const url = `/challenge/${username}?${params.toString()}`;
+
+            showStatus('Отправка вызова...', '');
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                if (response.ok) {
+                    showStatus(`✅ Вызов отправлен ${username} (${timeControl}, ${color}, ${rated ? 'рейтинговая' : 'нерейтинговая'})`, 'success');
+                } else {
+                    showStatus(`❌ Ошибка: ${data.detail || 'Неизвестная ошибка'}`, 'error');
+                }
+            } catch (err) {
+                showStatus(`❌ Ошибка сети: ${err.message}`, 'error');
+            }
+        });
+
+        function showStatus(msg, type) {
+            const div = document.getElementById('status');
+            div.textContent = msg;
+            div.className = `status ${type}`;
+            div.style.display = 'block';
+            if (type === 'success') {
+                setTimeout(() => { div.style.display = 'none'; }, 5000);
+            }
+        }
+    </script>
+</body>
+</html>
