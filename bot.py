@@ -23,7 +23,7 @@ active_games = set()
 games_lock = threading.Lock()
 MAX_CONCURRENT_GAMES = 3
 
-# Структура для издевательств
+# Хранилище активных издевательств
 # key = target_username (ник жертвы)
 bully_data = {}
 bully_lock = threading.Lock()
@@ -100,7 +100,6 @@ def start_bully_route(data: dict):
         games_left = -1  # бесконечно
 
     with bully_lock:
-        # Если уже есть активное издевательство, перезаписываем
         bully_data[username] = {
             'clock_limit': clock_limit,
             'clock_increment': clock_increment,
@@ -108,7 +107,6 @@ def start_bully_route(data: dict):
             'rated': rated,
             'games_left': games_left,
             'end_datetime': end_datetime,
-            'current_game_id': None,
         }
 
     # Отправляем первый вызов
@@ -211,14 +209,13 @@ def make_move(game_id, board, move_time):
         print(f"[{game_id}] Ошибка отправки хода: {e}")
         return False
 
-def play_game(game_id, initial_fen, bully_target=None):
+def play_game(game_id, initial_fen):
     with games_lock:
         active_games.add(game_id)
     try:
         board = chess.Board(initial_fen) if initial_fen else chess.Board()
         my_id = client.account.get()['id']
         white_id = black_id = None
-        opponent = None
         print(f"[{game_id}] Старт. Мой ID: {my_id}")
         while True:
             try:
@@ -247,59 +244,11 @@ def play_game(game_id, initial_fen, bully_target=None):
                             white_id = event.get('white', {}).get('id')
                         if black_id is None:
                             black_id = event.get('black', {}).get('id')
-                        if opponent is None:
-                            opponent = black_id if white_id == my_id else white_id
                     else:
                         continue
                     if event.get('status') and event.get('status') != 'started':
                         print(f"[{game_id}] Завершена: {event.get('status')}")
                         send_game_result(game_id, board, my_id)
-                        # Режим издевательства: если игра была начата для bully_target
-                        if bully_target:
-                            with bully_lock:
-                                if bully_target in bully_data:
-                                    info = bully_data[bully_target]
-                                    # Очищаем текущую игру
-                                    info['current_game_id'] = None
-                                    # Проверяем лимиты
-                                    now = datetime.now()
-                                    if info['end_datetime'] and now > info['end_datetime']:
-                                        del bully_data[bully_target]
-                                        print(f"[БУЛЛИНГ] Время истекло, издевательство над {bully_target} остановлено")
-                                    elif info['games_left'] is not None:
-                                        if info['games_left'] == 0:
-                                            del bully_data[bully_target]
-                                            print(f"[БУЛЛИНГ] Лимит партий исчерпан, издевательство над {bully_target} остановлено")
-                                        else:
-                                            if info['games_left'] > 0:
-                                                info['games_left'] -= 1
-                                            # Отправляем следующий вызов
-                                            try:
-                                                client.challenges.create(
-                                                    username=bully_target,
-                                                    rated=info['rated'],
-                                                    clock_limit=info['clock_limit'] * 60,
-                                                    clock_increment=info['clock_increment'],
-                                                    color=info['color'],
-                                                    variant="standard"
-                                                )
-                                                print(f"[БУЛЛИНГ] Отправлен новый вызов {bully_target}, осталось: {info['games_left'] if info['games_left'] != -1 else '∞'}")
-                                            except Exception as e:
-                                                print(f"[БУЛЛИНГ] Ошибка при отправке вызова: {e}")
-                                    else:
-                                        # Бесконечно
-                                        try:
-                                            client.challenges.create(
-                                                username=bully_target,
-                                                rated=info['rated'],
-                                                clock_limit=info['clock_limit'] * 60,
-                                                clock_increment=info['clock_increment'],
-                                                color=info['color'],
-                                                variant="standard"
-                                            )
-                                            print(f"[БУЛЛИНГ] Отправлен новый вызов {bully_target} (бесконечно)")
-                                        except Exception as e:
-                                            print(f"[БУЛЛИНГ] Ошибка: {e}")
                         return
                     if white_id is None or black_id is None:
                         continue
@@ -322,10 +271,6 @@ def play_game(game_id, initial_fen, bully_target=None):
     finally:
         with games_lock:
             active_games.discard(game_id)
-        if bully_target:
-            with bully_lock:
-                if bully_target in bully_data:
-                    bully_data[bully_target]['current_game_id'] = None
 
 def run_bot():
     print("Главный бот запущен. Ожидание вызовов...")
@@ -344,22 +289,66 @@ def run_bot():
                         continue
                     print(f"Вызов от {challenger} принят")
                     client.bots.accept_challenge(ch['id'])
-                    threading.Thread(target=play_game, args=(ch['id'], ch.get('initialFen'), None), daemon=True).start()
+                    threading.Thread(target=play_game, args=(ch['id'], ch.get('initialFen')), daemon=True).start()
                 elif event['type'] == 'gameStart':
                     game = event['game']
                     game_id = game['id']
+                    if game_id not in active_games:
+                        threading.Thread(target=play_game, args=(game_id, game.get('initialFen')), daemon=True).start()
+                elif event['type'] == 'gameFinish':
+                    game = event['game']
                     players = game.get('players', {})
                     white = players.get('white', {}).get('user', {}).get('name')
                     black = players.get('black', {}).get('user', {}).get('name')
-                    opponent = black if white == my_username else white
-                    if opponent:
-                        with bully_lock:
-                            if opponent in bully_data and bully_data[opponent]['current_game_id'] is None:
-                                bully_data[opponent]['current_game_id'] = game_id
-                                threading.Thread(target=play_game, args=(game_id, game.get('initialFen'), opponent), daemon=True).start()
-                                continue
-                    if game_id not in active_games:
-                        threading.Thread(target=play_game, args=(game_id, game.get('initialFen'), None), daemon=True).start()
+                    # Определяем соперника
+                    if my_username == white:
+                        opponent = black
+                    elif my_username == black:
+                        opponent = white
+                    else:
+                        continue
+                    # Проверяем активное издевательство
+                    with bully_lock:
+                        if opponent in bully_data:
+                            info = bully_data[opponent]
+                            now = datetime.now()
+                            if info['end_datetime'] and now > info['end_datetime']:
+                                del bully_data[opponent]
+                                print(f"[БУЛЛИНГ] Время истекло, издевательство над {opponent} остановлено")
+                            elif info['games_left'] is not None:
+                                if info['games_left'] <= 0:
+                                    del bully_data[opponent]
+                                    print(f"[БУЛЛИНГ] Лимит партий исчерпан, издевательство над {opponent} остановлено")
+                                else:
+                                    if info['games_left'] > 0:
+                                        info['games_left'] -= 1
+                                    # Отправляем следующий вызов
+                                    try:
+                                        client.challenges.create(
+                                            username=opponent,
+                                            rated=info['rated'],
+                                            clock_limit=info['clock_limit'] * 60,
+                                            clock_increment=info['clock_increment'],
+                                            color=info['color'],
+                                            variant="standard"
+                                        )
+                                        print(f"[БУЛЛИНГ] Отправлен новый вызов {opponent}, осталось: {info['games_left'] if info['games_left'] != -1 else '∞'}")
+                                    except Exception as e:
+                                        print(f"[БУЛЛИНГ] Ошибка при отправке вызова: {e}")
+                            else:
+                                # Бесконечно
+                                try:
+                                    client.challenges.create(
+                                        username=opponent,
+                                        rated=info['rated'],
+                                        clock_limit=info['clock_limit'] * 60,
+                                        clock_increment=info['clock_increment'],
+                                        color=info['color'],
+                                        variant="standard"
+                                    )
+                                    print(f"[БУЛЛИНГ] Отправлен новый вызов {opponent} (бесконечно)")
+                                except Exception as e:
+                                    print(f"[БУЛЛИНГ] Ошибка: {e}")
         except Exception as e:
             print(f"Ошибка в главном цикле: {e}. Пауза 30 сек.")
             time.sleep(30)
