@@ -10,6 +10,7 @@ ENGINE_URLS = [
     "https://brasche.onrender.com",
     "https://cloche.onrender.com",
 ]
+ENGINE_NAMES = ["Stockfish (neutral)", "Berserk (aggressive)", "Clover (balanced)"]
 
 if not TOKEN:
     raise RuntimeError("LICHESS_TOKEN environment variable not set")
@@ -101,21 +102,29 @@ def get_move_time(clock, board):
     return 2.0 if moves_done < 40 else 1.5
 
 def get_best_move(fen, move_time):
+    """Опрашивает три движка и возвращает ход с большинством голосов, логируя каждого."""
     candidates = []
     timeout = move_time + 2.0
-    for url in ENGINE_URLS:
+    for idx, url in enumerate(ENGINE_URLS):
         try:
             resp = requests.post(f"{url}/get_move", json={"fen": fen, "move_time": move_time}, timeout=timeout)
             if resp.status_code == 200:
                 move = resp.json().get("move")
                 if move:
                     candidates.append(move)
+                    print(f"[МЫСЛИТЕЛЬ {ENGINE_NAMES[idx]}] предложил {move}")
+                else:
+                    print(f"[МЫСЛИТЕЛЬ {ENGINE_NAMES[idx]}] не вернул ход")
+            else:
+                print(f"[МЫСЛИТЕЛЬ {ENGINE_NAMES[idx]}] ошибка HTTP {resp.status_code}")
         except Exception as e:
-            print(f"Ошибка {url}: {e}")
+            print(f"[МЫСЛИТЕЛЬ {ENGINE_NAMES[idx]}] исключение: {e}")
     if candidates:
         most_common = Counter(candidates).most_common(1)[0][0]
-        print(f"Голосование: {most_common} (из {len(candidates)})")
+        votes = Counter(candidates)[most_common]
+        print(f"Голосование: выбран {most_common} ({votes} из {len(candidates)})")
         return most_common
+    print("Голосование: нет кандидатов")
     return None
 
 def make_move(game_id, board, move_time):
