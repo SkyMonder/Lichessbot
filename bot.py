@@ -3,7 +3,6 @@ import chess, berserk, requests
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from collections import Counter
-from datetime import datetime, timedelta
 
 TOKEN = os.environ.get("LICHESS_TOKEN")
 ENGINE_URLS = [
@@ -22,12 +21,6 @@ running = True
 active_games = set()
 games_lock = threading.Lock()
 MAX_CONCURRENT_GAMES = 3
-
-# Хранилище активных издевательств
-bully_data = {}
-bully_lock = threading.Lock()
-bully_worker_running = False
-BULLY_INTERVAL = 5  # секунд между вызовами
 
 # Чтение HTML
 HTML_PATH = os.path.join(os.path.dirname(__file__), "index.html")
@@ -66,113 +59,10 @@ def manual_challenge(
             color=color,
             variant="standard"
         )
-        return {"status": "ok", "message": f"Challenge sent to {username} ({clock_limit}+{clock_increment}, {color})"}
+        return {"status": "ok", "message": f"Challenge sent to {username}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/start_bully")
-def start_bully_route(data: dict):
-    global bully_worker_running
-    username = data.get("username")
-    if not username:
-        raise HTTPException(400, "Username required")
-    clock_limit = int(data.get("clock_limit", 5))
-    clock_increment = int(data.get("clock_increment", 3))
-    color = data.get("color", "random")
-    rated = data.get("rated", True)
-    limit_type = data.get("limit_type", "infinite")
-    end_time_str = data.get("end_time")
-    games_count = data.get("games_count")
-
-    end_datetime = None
-    games_left = None
-
-    if limit_type == "time" and end_time_str:
-        try:
-            h, m = map(int, end_time_str.split(':'))
-            now = datetime.now()
-            end_datetime = now.replace(hour=h, minute=m, second=0, microsecond=0)
-            if end_datetime < now:
-                end_datetime += timedelta(days=1)
-        except:
-            raise HTTPException(400, "Invalid time format")
-    elif limit_type == "games" and games_count:
-        games_left = int(games_count)
-    else:
-        games_left = -1  # бесконечно
-
-    with bully_lock:
-        bully_data[username] = {
-            'clock_limit': clock_limit,
-            'clock_increment': clock_increment,
-            'color': color,
-            'rated': rated,
-            'games_left': games_left,
-            'end_datetime': end_datetime,
-        }
-    # Запускаем фоновый поток, если ещё не запущен
-    if not bully_worker_running:
-        bully_worker_running = True
-        threading.Thread(target=bully_worker, daemon=True).start()
-    return {"status": "ok", "message": f"Bullying of {username} started. Interval {BULLY_INTERVAL}s"}
-
-@app.post("/stop_bully")
-def stop_bully_route(data: dict):
-    username = data.get("username")
-    if not username:
-        raise HTTPException(400, "Username required")
-    with bully_lock:
-        if username in bully_data:
-            del bully_data[username]
-            return {"status": "ok", "message": f"Stopped bullying {username}"}
-        else:
-            return {"status": "not_found", "message": f"No active bullying for {username}"}
-
-def bully_worker():
-    """Фоновый поток: каждые BULLY_INTERVAL секунд отправляет вызовы для всех целей."""
-    while bully_worker_running:
-        # Копируем список целей, чтобы не блокировать надолго
-        with bully_lock:
-            targets = list(bully_data.items())
-        for target, info in targets:
-            # Проверяем лимиты
-            now = datetime.now()
-            if info['end_datetime'] and now > info['end_datetime']:
-                with bully_lock:
-                    if target in bully_data:
-                        del bully_data[target]
-                print(f"[БУЛЛИНГ] Время истекло для {target}")
-                continue
-            if info['games_left'] is not None:
-                if info['games_left'] <= 0:
-                    with bully_lock:
-                        if target in bully_data:
-                            del bully_data[target]
-                    print(f"[БУЛЛИНГ] Лимит партий исчерпан для {target}")
-                    continue
-                else:
-                    # Уменьшаем счётчик после отправки
-                    with bully_lock:
-                        if target in bully_data:
-                            bully_data[target]['games_left'] -= 1
-                    print(f"[БУЛЛИНГ] Отправка вызова {target}, осталось: {bully_data[target]['games_left'] if bully_data[target]['games_left'] != -1 else '∞'}")
-            else:
-                print(f"[БУЛЛИНГ] Отправка вызова {target} (бесконечно)")
-            # Отправляем вызов
-            try:
-                client.challenges.create(
-                    username=target,
-                    rated=info['rated'],
-                    clock_limit=info['clock_limit'] * 60,
-                    clock_increment=info['clock_increment'],
-                    color=info['color'],
-                    variant="standard"
-                )
-            except Exception as e:
-                print(f"[БУЛЛИНГ] Ошибка вызова для {target}: {e}")
-        time.sleep(BULLY_INTERVAL)
-
-# --- Остальные функции (игра, ходы) без изменений ---
 def send_greeting(game_id, opponent):
     msg = random.choice([f"Привет, {opponent}! 🤝", f"Да победит сильнейший, {opponent}! 🧠"])
     try:
