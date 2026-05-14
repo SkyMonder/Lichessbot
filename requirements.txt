@@ -1,6 +1,2 @@
-berserk
-python-chess
-fastapi
-uvicorn
-gunicorn
-requests
+flask
+chess
