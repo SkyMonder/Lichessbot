@@ -1,227 +1,56 @@
-import os, sys, threading, time, random, traceback
-import chess, berserk, requests
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
-from collections import Counter
+import os
+import chess
+import chess.engine
+from flask import Flask, request, jsonify
 
-TOKEN = os.environ.get("LICHESS_TOKEN")
-ENGINE_URLS = [
-    "https://stboch.onrender.com",
-    "https://brasche.onrender.com",
-    "https://cloche.onrender.com",
-]
+app = Flask(__name__)
 
-if not TOKEN:
-    raise RuntimeError("LICHESS_TOKEN environment variable not set")
+# Настройки из переменных окружения
+STOCKFISH_PATH = os.environ.get("STOCKFISH_PATH", "stockfish")
+SKILL_LEVEL = int(os.environ.get("SKILL_LEVEL", 20))
+ENGINE_TIMEOUT = 60  # максимальное время работы движка в секундах
 
-session = berserk.TokenSession(TOKEN)
-client = berserk.Client(session)
-app = FastAPI()
-running = True
-active_games = set()
-games_lock = threading.Lock()
-MAX_CONCURRENT_GAMES = 3
+def analyze_fen(fen: str, movetime: float) -> dict:
+    """Запускает Stockfish и возвращает лучший ход и оценку."""
+    board = chess.Board(fen)
+    if board.is_game_over():
+        return {"move": None, "score": 0, "error": "game over"}
 
-# Чтение HTML
-HTML_PATH = os.path.join(os.path.dirname(__file__), "index.html")
-try:
-    with open(HTML_PATH, "r", encoding="utf-8") as f:
-        HTML_CONTENT = f.read()
-except:
-    HTML_CONTENT = "<html><body><h1>SkyBotinok</h1></body></html>"
+    # Запускаем движок с ограничением времени
+    engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
+    engine.configure({"Skill Level": SKILL_LEVEL})
 
-@app.get("/", response_class=HTMLResponse)
-async def root():
-    return HTML_CONTENT
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-@app.get("/challenge/{username}")
-def manual_challenge(
-    username: str,
-    clock_limit: int = 5,
-    clock_increment: int = 3,
-    color: str = "random",
-    rated: bool = False
-):
-    if not username:
-        raise HTTPException(status_code=400, detail="Username required")
-    if color not in ["random", "white", "black"]:
-        raise HTTPException(status_code=400, detail="Invalid color")
+    # movetime в секундах, переводим в секунды для limit
+    limit = chess.engine.Limit(time=movetime)
     try:
-        client.challenges.create(
-            username=username,
-            rated=rated,
-            clock_limit=clock_limit * 60,
-            clock_increment=clock_increment,
-            color=color,
-            variant="standard"
-        )
-        return {"status": "ok", "message": f"Challenge sent to {username}"}
+        result = engine.play(board, limit)
+        info = engine.analyse(board, limit)
+        score = info["score"].white()  # оценка с точки зрения белых
+        # Преобразуем оценку в число (сантипешки или мат)
+        if score.is_mate():
+            score_val = 10000 if score.mate() > 0 else -10000
+        else:
+            score_val = score.score()
+        engine.quit()
+        return {"move": result.move.uci(), "score": score_val}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        engine.quit()
+        return {"move": None, "score": 0, "error": str(e)}
 
-def send_greeting(game_id, opponent):
-    msg = random.choice([f"Привет, {opponent}! 🤝", f"Да победит сильнейший, {opponent}! 🧠"])
-    try:
-        client.bots.post_message(game_id, msg, spectator=False)
-    except:
-        pass
+@app.route("/ping")
+def ping():
+    return "pong"
 
-def send_game_result(game_id, board, my_id):
-    if board.is_checkmate():
-        msg = "🏆 Мат! Отличная игра!" if board.turn != my_id else "😞 Мат... поздравляю!"
-    elif board.is_stalemate() or board.is_insufficient_material():
-        msg = "🤝 Ничья! Спасибо за партию."
-    else:
-        msg = "Игра завершена. GG!"
-    try:
-        client.bots.post_message(game_id, msg, spectator=False)
-    except:
-        pass
+@app.route("/analyze", methods=["POST"])
+def analyze():
+    data = request.get_json()
+    fen = data.get("fen")
+    movetime = data.get("movetime", 0.1)  # по умолчанию 0.1 сек
+    if not fen:
+        return jsonify({"error": "fen required"}), 400
+    result = analyze_fen(fen, movetime)
+    return jsonify(result)
 
-def get_move_time(clock, board):
-    inc = clock.get('increment', 0)
-    my_time = clock.get('white' if board.turn == chess.WHITE else 'black', 0)
-    moves_done = board.fullmove_number
-    if my_time < 1.0:
-        return 0.05
-    if inc <= 1:
-        if my_time < 5.0:
-            return 0.2
-        return 0.4 if moves_done < 30 else 0.3
-    if inc <= 3:
-        if my_time < 10.0:
-            return 0.5
-        return 1.0 if moves_done < 25 else 0.8
-    if my_time < 20.0:
-        return 1.0
-    return 2.0 if moves_done < 40 else 1.5
-
-def get_best_move(fen, move_time):
-    candidates = []
-    timeout = move_time + 2.0
-    for url in ENGINE_URLS:
-        try:
-            resp = requests.post(f"{url}/get_move", json={"fen": fen, "move_time": move_time}, timeout=timeout)
-            if resp.status_code == 200:
-                move = resp.json().get("move")
-                if move:
-                    candidates.append(move)
-        except Exception as e:
-            print(f"Ошибка {url}: {e}")
-    if candidates:
-        most_common = Counter(candidates).most_common(1)[0][0]
-        print(f"Голосование: {most_common} (из {len(candidates)})")
-        return most_common
-    return None
-
-def make_move(game_id, board, move_time):
-    move_uci = get_best_move(board.fen(), move_time)
-    if not move_uci:
-        return False
-    try:
-        move = chess.Move.from_uci(move_uci)
-        if move not in board.legal_moves:
-            print(f"[{game_id}] Нелегальный ход {move_uci}")
-            return False
-        client.bots.make_move(game_id, move_uci)
-        print(f"[{game_id}] >>> {move_uci} ({move_time:.2f}s)")
-        sys.stdout.flush()
-        return True
-    except Exception as e:
-        print(f"[{game_id}] Ошибка отправки хода: {e}")
-        return False
-
-def play_game(game_id, initial_fen):
-    with games_lock:
-        active_games.add(game_id)
-    try:
-        board = chess.Board(initial_fen) if initial_fen else chess.Board()
-        my_id = client.account.get()['id']
-        white_id = black_id = None
-        print(f"[{game_id}] Старт. Мой ID: {my_id}")
-        while True:
-            try:
-                stream = client.bots.stream_game_state(game_id)
-                for event in stream:
-                    if 'clock' in event:
-                        move_time = get_move_time(event['clock'], board)
-                    if event['type'] == 'gameFull':
-                        white_id = event.get('white', {}).get('id')
-                        black_id = event.get('black', {}).get('id')
-                        moves_str = event.get('state', {}).get('moves', '')
-                        if moves_str:
-                            moves = moves_str.split()
-                            while len(moves) > len(board.move_stack):
-                                board.push_uci(moves[len(board.move_stack)])
-                        print(f"[{game_id}] gameFull: white={white_id} black={black_id} turn={board.turn} moves={len(board.move_stack)}")
-                        opponent = black_id if white_id == my_id else white_id
-                        send_greeting(game_id, opponent)
-                    elif event['type'] == 'gameState':
-                        moves_str = event.get('moves', '')
-                        if moves_str:
-                            moves = moves_str.split()
-                            while len(moves) > len(board.move_stack):
-                                board.push_uci(moves[len(board.move_stack)])
-                        if white_id is None:
-                            white_id = event.get('white', {}).get('id')
-                        if black_id is None:
-                            black_id = event.get('black', {}).get('id')
-                    else:
-                        continue
-                    if event.get('status') and event.get('status') != 'started':
-                        print(f"[{game_id}] Завершена: {event.get('status')}")
-                        send_game_result(game_id, board, my_id)
-                        return
-                    if white_id is None or black_id is None:
-                        continue
-                    if (board.turn == chess.WHITE and white_id == my_id) or (board.turn == chess.BLACK and black_id == my_id):
-                        success = make_move(game_id, board, move_time)
-                        if not success:
-                            print(f"[{game_id}] Ход не удался, ждём...")
-                            time.sleep(0.5)
-            except (berserk.exceptions.ApiError, requests.exceptions.ConnectionError) as e:
-                print(f"[{game_id}] Ошибка соединения: {e}. Переподключение через 5 сек...")
-                time.sleep(5)
-                continue
-            except Exception as e:
-                print(f"[{game_id}] Критическая ошибка: {e}")
-                traceback.print_exc()
-                break
-    except Exception as e:
-        print(f"[{game_id}] Внешняя ошибка: {e}")
-        traceback.print_exc()
-    finally:
-        with games_lock:
-            active_games.discard(game_id)
-
-def run_bot():
-    print("Главный бот запущен. Ожидание вызовов...")
-    my_id = client.account.get()['id']
-    while running:
-        try:
-            for event in client.bots.stream_incoming_events():
-                if event['type'] == 'challenge':
-                    ch = event['challenge']
-                    challenger = ch['challenger']['id']
-                    if challenger == my_id:
-                        continue
-                    if len(active_games) >= MAX_CONCURRENT_GAMES:
-                        print(f"Отклонён вызов от {challenger}: много игр ({len(active_games)})")
-                        continue
-                    print(f"Вызов от {challenger} принят")
-                    client.bots.accept_challenge(ch['id'])
-                    threading.Thread(target=play_game, args=(ch['id'], ch.get('initialFen')), daemon=True).start()
-                elif event['type'] == 'gameStart':
-                    game = event['game']
-                    game_id = game['id']
-                    if game_id not in active_games:
-                        threading.Thread(target=play_game, args=(game_id, game.get('initialFen')), daemon=True).start()
-        except Exception as e:
-            print(f"Ошибка в главном цикле: {e}. Пауза 30 сек.")
-            time.sleep(30)
-
-threading.Thread(target=run_bot, daemon=True).start()
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
